@@ -370,3 +370,79 @@ class TestComputeSha256:
         test_file = tmp_path / "f.txt"
         test_file.write_bytes(b"data")
         assert compute_sha256(test_file) == compute_sha256(str(test_file))
+
+
+# ── stimuli/grammars/t2.py ────────────────────────────────────────────────────
+
+from stimuli.grammars.t2 import generate as t2_generate, generate_behavioral_items
+
+REQUIRED_PAIR_KEYS = {
+    "pair_id", "thread_id", "sentence_a", "sentence_b",
+    "label_a", "label_b", "theoretical_distinction",
+    "frequency_matched", "generation_grammar",
+}
+
+class TestT2Grammar:
+
+    def test_generate_returns_correct_count(self):
+        assert len(t2_generate(60)) == 60
+
+    def test_generate_required_keys_present(self):
+        for pair in t2_generate(10):
+            assert REQUIRED_PAIR_KEYS.issubset(pair.keys())
+
+    def test_generate_thread_id_is_t2(self):
+        for pair in t2_generate(10):
+            assert pair["thread_id"] == "t2"
+
+    def test_generate_label_combinations_valid(self):
+        valid_combinations = {("opaque", "opaque"), ("transparent", "transparent")}
+        for pair in t2_generate(60):
+            assert (pair["label_a"], pair["label_b"]) in valid_combinations
+
+    def test_generate_pair_ids_sequential(self):
+        pairs = t2_generate(10)
+        for index, pair in enumerate(pairs):
+            assert pair["pair_id"] == f"t2_{index + 1:04d}"
+
+    def test_generate_frequency_matched_is_false(self):
+        # validate_set() sets this to True — grammar must emit False
+        for pair in t2_generate(10):
+            assert pair["frequency_matched"] is False
+
+    def test_generate_reproducible_with_same_seed(self):
+        run_one = t2_generate(30, seed=7)
+        run_two = t2_generate(30, seed=7)
+        assert run_one == run_two
+
+    def test_generate_different_seeds_give_different_order(self):
+        run_seed_a = [(p["sentence_a"], p["sentence_b"]) for p in t2_generate(30, seed=1)]
+        run_seed_b = [(p["sentence_a"], p["sentence_b"]) for p in t2_generate(30, seed=2)]
+        assert run_seed_a != run_seed_b
+
+    def test_generate_exceeds_max_raises(self):
+        with pytest.raises(ValueError, match="630"):
+            t2_generate(631)
+
+    def test_generate_contains_both_label_classes(self):
+        pairs = t2_generate(630)
+        opaque_count = sum(1 for p in pairs if p["label_a"] == "opaque")
+        transparent_count = sum(1 for p in pairs if p["label_a"] == "transparent")
+        assert opaque_count == 600
+        assert transparent_count == 30
+
+    def test_generate_sentences_are_nonempty_strings(self):
+        for pair in t2_generate(10):
+            assert isinstance(pair["sentence_a"], str) and len(pair["sentence_a"]) > 0
+            assert isinstance(pair["sentence_b"], str) and len(pair["sentence_b"]) > 0
+
+    def test_behavioral_items_count(self):
+        assert len(generate_behavioral_items()) == 12
+
+    def test_behavioral_items_required_keys(self):
+        for item in generate_behavioral_items():
+            assert {"question", "choice_a", "choice_b", "correct"}.issubset(item.keys())
+
+    def test_behavioral_items_correct_field_valid(self):
+        for item in generate_behavioral_items():
+            assert item["correct"] in ("a", "b")
