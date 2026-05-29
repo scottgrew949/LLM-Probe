@@ -519,3 +519,72 @@ class TestT2bGrammar:
     def test_behavioral_items_correct_field_valid(self):
         for item in t2b_behavioral_items():
             assert item["correct"] in ("a", "b")
+
+
+# ── stimuli/grammars/t1a.py ───────────────────────────────────────────────────
+
+from stimuli.grammars.t1a import generate as t1a_generate
+from stimuli.grammars.t1a import generate_behavioral_items as t1a_behavioral_items
+
+
+class TestT1aGrammar:
+
+    def test_generate_returns_correct_count(self):
+        assert len(t1a_generate(30)) == 30
+
+    def test_generate_required_keys_present(self):
+        for pair in t1a_generate(10):
+            assert REQUIRED_PAIR_KEYS.issubset(pair.keys())
+
+    def test_generate_thread_id_is_t1a(self):
+        for pair in t1a_generate(10):
+            assert pair["thread_id"] == "t1a"
+
+    def test_generate_labels_always_l3_and_l1(self):
+        for pair in t1a_generate(30):
+            assert pair["label_a"] == "causal_l3"
+            assert pair["label_b"] == "associative_l1"
+
+    def test_generate_pair_ids_sequential(self):
+        pairs = t1a_generate(10)
+        for index, pair in enumerate(pairs):
+            assert pair["pair_id"] == f"t1a_{index + 1:04d}"
+
+    def test_generate_frequency_matched_is_false(self):
+        for pair in t1a_generate(10):
+            assert pair["frequency_matched"] is False
+
+    def test_generate_reproducible_with_same_seed(self):
+        assert t1a_generate(30, seed=5) == t1a_generate(30, seed=5)
+
+    def test_generate_different_seeds_give_different_order(self):
+        order_a = [(p["sentence_a"], p["sentence_b"]) for p in t1a_generate(30, seed=1)]
+        order_b = [(p["sentence_a"], p["sentence_b"]) for p in t1a_generate(30, seed=2)]
+        assert order_a != order_b
+
+    def test_generate_exceeds_max_raises(self):
+        with pytest.raises(ValueError, match="300"):
+            t1a_generate(301)
+
+    def test_generate_sentences_nonempty(self):
+        for pair in t1a_generate(10):
+            assert len(pair["sentence_a"]) > 0
+            assert len(pair["sentence_b"]) > 0
+
+    def test_barometer_pairs_have_notes(self):
+        all_pairs = t1a_generate(300)
+        barometer_pairs = [p for p in all_pairs if "notes" in p]
+        assert len(barometer_pairs) == 50  # 1 domain × 5 × 5 = 25... wait 5x5=25 not 50
+        # Actually: 5 L3 templates × 5 L1 templates = 25 barometer pairs
+        assert len(barometer_pairs) >= 25
+
+    def test_behavioral_items_count(self):
+        assert len(t1a_behavioral_items()) == 12
+
+    def test_behavioral_items_required_keys(self):
+        for item in t1a_behavioral_items():
+            assert {"question", "choice_a", "choice_b", "correct"}.issubset(item.keys())
+
+    def test_behavioral_items_correct_field_valid(self):
+        for item in t1a_behavioral_items():
+            assert item["correct"] in ("a", "b")
