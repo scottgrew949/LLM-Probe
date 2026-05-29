@@ -48,9 +48,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any
+
+from core.text_utils import FUNCTION_WORDS, mean_log10_frequency
 
 # Type alias for a stimulus pair dict matching stimulus.schema.json
 StimulusPair = dict[str, Any]
@@ -222,36 +223,16 @@ def check_frequency_match(pair: StimulusPair) -> bool:
         Uses wordfreq library (pip install wordfreq) for corpus frequency lookups.
         Language: English. Corpus: combined web text.
     """
-    import re
-    from wordfreq import word_frequency
-
     sentence_a = pair.get("sentence_a", "")
     sentence_b = pair.get("sentence_b", "")
 
-    function_words = {
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "in", "on", "at", "to",
-        "for", "of", "with", "by", "from", "and", "or", "but", "not",
-        "that", "this", "it", "its",
-    }
+    freq_a = mean_log10_frequency(sentence_a)
+    freq_b = mean_log10_frequency(sentence_b)
 
-    def extract_content_words(sentence: str) -> list[str]:
-        all_words = re.findall(r"[a-z]+", sentence.lower())
-        return [word for word in all_words if word not in function_words]
+    if freq_a == 0.0 or freq_b == 0.0:
+        return True  # no content words — pass through
 
-    def mean_log10_frequency(word_list: list[str]) -> float:
-        log_freqs = [math.log10(max(word_frequency(w, "en"), 1e-9)) for w in word_list]
-        return sum(log_freqs) / len(log_freqs)
-
-    content_words_a = extract_content_words(sentence_a)
-    content_words_b = extract_content_words(sentence_b)
-
-    if not content_words_a or not content_words_b:
-        return True  # can't check — pass through
-
-    frequency_difference = abs(mean_log10_frequency(content_words_a) - mean_log10_frequency(content_words_b))
-    return frequency_difference <= 1.0
+    return abs(freq_a - freq_b) <= 1.0
 
 
 # ── Behavioral gate ───────────────────────────────────────────────────────────

@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -107,8 +106,7 @@ def run_surface_null(config: ExperimentConfig) -> dict[str, Any]:
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import StratifiedKFold, cross_val_score
     from sklearn.preprocessing import LabelEncoder
-    from wordfreq import word_frequency
-    import re
+    from core.text_utils import mean_log10_frequency
 
     stimulus_file_path = Path(config.stimulus_file)
     stimulus_pairs = []
@@ -117,22 +115,6 @@ def run_surface_null(config: ExperimentConfig) -> dict[str, Any]:
             stripped_line = raw_line.strip()
             if stripped_line:
                 stimulus_pairs.append(json.loads(stripped_line))
-
-    function_words = {
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "in", "on", "at", "to",
-        "for", "of", "with", "by", "from", "and", "or", "but", "not",
-        "that", "this", "it", "its",
-    }
-
-    def mean_log10_frequency(sentence: str) -> float:
-        words = re.findall(r"[a-z]+", sentence.lower())
-        content_words = [w for w in words if w not in function_words]
-        if not content_words:
-            return 0.0
-        log_freqs = [math.log10(max(word_frequency(w, "en"), 1e-9)) for w in content_words]
-        return sum(log_freqs) / len(log_freqs)
 
     # One feature row per sentence: [mean_log10_freq, token_count]
     # Label = theoretical label of that sentence (e.g. "opaque", "transparent")
@@ -392,7 +374,8 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
         # V2: specificity check at the peak layer
         # Mean-ablate the target at the peak layer and compare KL effects
         peak_layer = sweep_result["peak_layer"]
-        peak_activations = np.array(layer_activation_sets[peak_layer]["activations"])
+        peak_activation_set = next(s for s in layer_activation_sets if s["layer"] == peak_layer)
+        peak_activations = np.array(peak_activation_set["activations"])
 
         # Get baseline logits for the target stimulus (unpatched)
         import torch
