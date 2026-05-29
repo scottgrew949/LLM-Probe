@@ -89,6 +89,8 @@ Expected outcomes:
 - Class 2 diverges, magnitude correlates with cognitive difference → hyperintensional
 - Some class 3 pairs converge → sub-intensional, model coarser than possible-worlds semantics
 
+**Model requirement:** T2b requires a model with reliable mathematical knowledge (prime/composite/odd number theory). GPT-2 medium and Pythia 1.4B both fail the behavioral gate on this domain. T2b runs in Phase 7 on Llama 3.2 3B alongside the full cross-architecture sweep.
+
 ---
 
 ### T3: Intensional Context Failure
