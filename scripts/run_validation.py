@@ -33,10 +33,10 @@ THREAD_ID = args.thread
 # Max pairs per thread — full product space for each grammar
 N_PAIRS_BY_THREAD: dict[str, int] = {
     "t1a": 300,
-    "t2":  630,
-    "t2b": 30,
     "t1b": 300,
     "t1c": 300,
+    "t2":  630,
+    "t2b": 30,
     "t3":  300,
     "t4":  300,
     "t5":  300,
