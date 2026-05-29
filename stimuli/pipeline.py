@@ -347,6 +347,8 @@ def run_behavioral_gate(
 
         per_item_results.append({
             "question": question_prefix,
+            "choice_a": choice_a_text,
+            "choice_b": choice_b_text,
             "model_choice": model_choice,
             "correct_choice": correct_choice,
             "is_correct": is_correct,
