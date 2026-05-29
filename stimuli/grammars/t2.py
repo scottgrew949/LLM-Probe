@@ -94,82 +94,98 @@ _MAX_PAIRS: int = 630
 # Expected accuracy: 10-12/12 (83-100%), well above the 70% gate floor (V8).
 
 _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
-    # Hesperus / Phosphorus — Venus associations
+    # ── Class 1: Substitution blocking in opaque context ──────────────────────
+    # Tests whether the model respects that belief reports track sense,
+    # not reference. The agent's epistemic state fixes which name is correct.
+
+    # Lois Lane does not know Clark Kent = Superman → opaque context blocks swap
     {
-        "question": "The evening star is also known as",
-        "choice_a": "Phosphorus",
-        "choice_b": "Mars",
+        "question": "Lois Lane does not know Clark Kent is Superman. Lois believes ___ is just a reporter.",
+        "choice_a": "Clark Kent",
+        "choice_b": "Superman",
         "correct": "a",
     },
+    # Ancient Greeks tracked Hesperus under that name, not Phosphorus
     {
-        "question": "The morning star is also known as",
+        "question": "The ancient Greeks who saw the evening star called it Hesperus. They believed ___ was a divine light.",
         "choice_a": "Hesperus",
-        "choice_b": "Jupiter",
+        "choice_b": "Phosphorus",
         "correct": "a",
     },
+    # Clemens's readers knew him under his pen name, not his real name
     {
-        "question": "Hesperus and Phosphorus both refer to the planet",
-        "choice_a": "Venus",
-        "choice_b": "Saturn",
+        "question": "Samuel Clemens kept his real identity private. His readers only knew him as ___.",
+        "choice_a": "Mark Twain",
+        "choice_b": "Samuel Clemens",
         "correct": "a",
     },
-    # Cicero / Tully — Roman orator associations
+
+    # ── Class 2: Identity confirmed in transparent context ────────────────────
+    # Tests that the model knows these pairs are coreferential.
+    # Transparent context — substitution should be acceptable.
+
     {
-        "question": "The Roman orator Cicero was also known as",
-        "choice_a": "Tully",
-        "choice_b": "Caesar",
-        "correct": "a",
-    },
-    {
-        "question": "Cicero was a famous Roman",
-        "choice_a": "orator",
-        "choice_b": "emperor",
-        "correct": "a",
-    },
-    # Clark Kent / Superman
-    {
-        "question": "Clark Kent is the secret identity of",
+        "question": "Clark Kent and Superman are the same person. Therefore Clark Kent is ___.",
         "choice_a": "Superman",
         "choice_b": "Batman",
         "correct": "a",
     },
     {
-        "question": "Superman's real name is",
-        "choice_a": "Clark Kent",
-        "choice_b": "Bruce Wayne",
-        "correct": "a",
-    },
-    # Bruce Wayne / Batman
-    {
-        "question": "Bruce Wayne is the secret identity of",
-        "choice_a": "Batman",
-        "choice_b": "Superman",
+        "question": "Hesperus and Phosphorus are both names for the planet ___.",
+        "choice_a": "Venus",
+        "choice_b": "Mars",
         "correct": "a",
     },
     {
-        "question": "Batman's real name is",
-        "choice_a": "Bruce Wayne",
-        "choice_b": "Clark Kent",
-        "correct": "a",
-    },
-    # Mark Twain / Samuel Clemens
-    {
-        "question": "Mark Twain was the pen name of",
+        "question": "Mark Twain's real name was ___.",
         "choice_a": "Samuel Clemens",
         "choice_b": "Ernest Hemingway",
         "correct": "a",
     },
     {
-        "question": "The author Samuel Clemens is better known as",
+        "question": "Bruce Wayne and Batman are the same person. Therefore Bruce Wayne is ___.",
+        "choice_a": "Batman",
+        "choice_b": "Superman",
+        "correct": "a",
+    },
+
+    # ── Class 3: Agent epistemic state ────────────────────────────────────────
+    # Tests whether the model tracks what the agent knows vs does not know.
+    # Correct answer is determined by the agent's perspective, not the fact.
+
+    # Gotham citizens don't know Bruce Wayne = Batman
+    {
+        "question": "Batman operates in secret. Most citizens of Gotham believe Bruce Wayne is just a ___.",
+        "choice_a": "billionaire",
+        "choice_b": "superhero",
+        "correct": "a",
+    },
+    # Sailors knew the planet only as Hesperus — Phosphorus was unknown to them
+    {
+        "question": "Sailors navigating by the evening star used the name Hesperus, not knowing it was also called ___.",
+        "choice_a": "Phosphorus",
+        "choice_b": "Mars",
+        "correct": "a",
+    },
+    # Superman's enemies track him as Superman, not as Clark Kent
+    {
+        "question": "Superman's enemies want to defeat him, but they do not know his secret identity is ___.",
+        "choice_a": "Clark Kent",
+        "choice_b": "Bruce Wayne",
+        "correct": "a",
+    },
+    # Readers tracked the author under his pen name
+    {
+        "question": "The author Samuel Clemens is better known as ___.",
         "choice_a": "Mark Twain",
         "choice_b": "Jack London",
         "correct": "a",
     },
-    # Venus / evening star collocation
+    # Coreferential identity — transparent
     {
-        "question": "Venus is visible in the evening sky and is called the",
-        "choice_a": "evening star",
-        "choice_b": "morning cloud",
+        "question": "Cicero and Tully refer to the same Roman ___.",
+        "choice_a": "orator",
+        "choice_b": "emperor",
         "correct": "a",
     },
 ]
