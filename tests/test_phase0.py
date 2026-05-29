@@ -655,7 +655,7 @@ class TestT1bGrammar:
             assert len(pair["sentence_b"]) > 0
 
     def test_behavioral_items_count(self):
-        assert len(t1b_behavioral_items()) == 12
+        assert len(t1b_behavioral_items()) == 8
 
     def test_behavioral_items_required_keys(self):
         for item in t1b_behavioral_items():
