@@ -118,88 +118,97 @@ _MAX_PAIRS: int = 30  # 10 per class
 # Expected accuracy: ≥10/12, well above the 0.70 gate floor (V8).
 
 _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
-    # Class 1 knowledge: conjunction commutativity
+    # ── Class 1: Classical propositional logic ────────────────────────────────
+    # Canon: Frege's Begriffsschrift — commutativity of conjunction (P∧Q ↔ Q∧P),
+    # double negation elimination (¬¬P ↔ P). Logically equivalent pairs must
+    # converge in representation under any semantics.
+
     {
-        "question": "Seven is prime and odd. This is the same as saying:",
-        "choice_a": "Seven is odd and prime",
-        "choice_b": "Seven is odd and even",
+        "question": "In classical logic, conjunction is commutative: P and Q is equivalent to ___",
+        "choice_a": "Q and P",
+        "choice_b": "Q or P",
         "correct": "a",
     },
-    # Class 1 knowledge: double negation elimination
     {
-        "question": "It is not the case that seven is not prime. Therefore seven is:",
+        "question": "Frege's logic holds that double negation eliminates: it is not the case that seven is not prime, therefore seven is ___",
+        "choice_a": "prime",
+        "choice_b": "composite",
+        "correct": "a",
+    },
+    {
+        "question": "Seven is odd and prime. By commutativity of conjunction, this is logically equivalent to ___",
+        "choice_a": "Seven is prime and odd",
+        "choice_b": "Seven is prime or odd",
+        "correct": "a",
+    },
+
+    # ── Class 2: Euclid's definitions + Frege sense/reference ─────────────────
+    # Canon: Euclid's Elements (Book VII) defines prime and even. Frege's
+    # sense/reference distinction: "prime" and "not composite" are different
+    # senses (modes of presentation) for the same mathematical reference.
+    # Intensionally equivalent pairs have identical truth conditions in all
+    # possible worlds — Lewis/Stalnaker predict convergence, hyperintensional
+    # semantics may predict divergence.
+
+    {
+        "question": "In Euclid's number theory, a prime has no factors other than one and itself — meaning it is ___",
+        "choice_a": "not composite",
+        "choice_b": "not odd",
+        "correct": "a",
+    },
+    {
+        "question": "By Euclid's definition, a number that is not composite is called ___",
         "choice_a": "prime",
         "choice_b": "even",
         "correct": "a",
     },
-    # Class 1 knowledge: not even = odd
     {
-        "question": "True or false: nine is not even.",
-        "choice_a": "True",
-        "choice_b": "False",
-        "correct": "a",
-    },
-    # Class 2 knowledge: prime = not composite (canonical hyperintensionality pair)
-    {
-        "question": "Seven is prime. Is seven composite?",
-        "choice_a": "No, seven is not composite",
-        "choice_b": "Yes, seven is composite",
-        "correct": "a",
-    },
-    # Class 2 knowledge: not composite = prime
-    {
-        "question": "Seven is not composite. Therefore seven is:",
-        "choice_a": "prime",
-        "choice_b": "even",
-        "correct": "a",
-    },
-    # Class 3 knowledge: prime ≠ even
-    {
-        "question": "Seven is prime. Is seven also even?",
-        "choice_a": "No, seven is odd",
-        "choice_b": "Yes, seven is even",
-        "correct": "a",
-    },
-    # Class 3 knowledge: all unmarried ≠ some married
-    {
-        "question": "All bachelors are unmarried. Does this mean some bachelors are married?",
-        "choice_a": "No",
-        "choice_b": "Yes",
-        "correct": "a",
-    },
-    # Class 3 knowledge: sqrt(4) = 2, not 3
-    {
-        "question": "The square root of four is:",
+        "question": "Euclid defines an even number as one divisible into two equal parts — meaning even numbers are divisible by ___",
         "choice_a": "two",
         "choice_b": "three",
         "correct": "a",
     },
-    # Class 2 knowledge: inverse operations
     {
-        "question": "Two squared is four. The square root of four is:",
+        "question": "Two squared is four. By the definition of square roots, the square root of four is ___",
         "choice_a": "two",
         "choice_b": "eight",
         "correct": "a",
     },
-    # Class 1 knowledge: commutativity
+
+    # ── Class 3: Number theory + Aristotelian logic ───────────────────────────
+    # Canon: Number theory (prime ≠ even are distinct properties with different
+    # truth conditions). Aristotle's categorical logic (All A are B does not
+    # entail Some A are not-B). Kant/Frege analytic truth (bachelor predicate
+    # contained in subject). Intensionally distinct pairs must diverge.
+
     {
-        "question": "Three is odd and prime. Three is prime and:",
+        "question": "Seven is prime. In number theory, being prime and being even are distinct properties — therefore seven is ___",
         "choice_a": "odd",
         "choice_b": "even",
         "correct": "a",
     },
-    # Class 2 knowledge: even = divisible by 2
     {
-        "question": "Six is even. Is six divisible by two?",
-        "choice_a": "Yes",
-        "choice_b": "No",
+        "question": "With the sole exception of two, every prime number in number theory is ___",
+        "choice_a": "odd",
+        "choice_b": "even",
         "correct": "a",
     },
-    # Class 2 knowledge: prime combined with commutativity
     {
-        "question": "Five is prime and odd. Five is also:",
-        "choice_a": "not composite",
-        "choice_b": "even",
+        "question": "Nine is a perfect square. A perfect square greater than one cannot be ___",
+        "choice_a": "prime",
+        "choice_b": "odd",
+        "correct": "a",
+    },
+    {
+        "question": "In Aristotelian logic, all bachelors are unmarried does not entail that some bachelors are ___",
+        "choice_a": "married",
+        "choice_b": "unmarried",
+        "correct": "a",
+    },
+    {
+        "question": "The proposition all bachelors are unmarried is analytically true — the predicate is contained in the subject. A bachelor is by definition ___",
+        "choice_a": "an unmarried man",
+        "choice_b": "a married man",
         "correct": "a",
     },
 ]
