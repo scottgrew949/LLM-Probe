@@ -446,3 +446,76 @@ class TestT2Grammar:
     def test_behavioral_items_correct_field_valid(self):
         for item in generate_behavioral_items():
             assert item["correct"] in ("a", "b")
+
+
+# ── stimuli/grammars/t2b.py ───────────────────────────────────────────────────
+
+from stimuli.grammars.t2b import generate as t2b_generate
+from stimuli.grammars.t2b import generate_behavioral_items as t2b_behavioral_items
+
+VALID_T2B_LABELS = {"logically_equivalent", "intensionally_equivalent", "intensionally_distinct"}
+
+class TestT2bGrammar:
+
+    def test_generate_returns_correct_count(self):
+        assert len(t2b_generate(20)) == 20
+
+    def test_generate_required_keys_present(self):
+        for pair in t2b_generate(10):
+            assert REQUIRED_PAIR_KEYS.issubset(pair.keys())
+
+    def test_generate_thread_id_is_t2b(self):
+        for pair in t2b_generate(10):
+            assert pair["thread_id"] == "t2b"
+
+    def test_generate_all_three_classes_present(self):
+        pairs = t2b_generate(30)
+        labels_found = {p["label_a"] for p in pairs}
+        assert labels_found == VALID_T2B_LABELS
+
+    def test_generate_each_class_has_ten_pairs(self):
+        pairs = t2b_generate(30)
+        for label in VALID_T2B_LABELS:
+            count = sum(1 for p in pairs if p["label_a"] == label)
+            assert count == 10
+
+    def test_generate_label_a_equals_label_b(self):
+        for pair in t2b_generate(30):
+            assert pair["label_a"] == pair["label_b"]
+
+    def test_generate_pair_ids_sequential(self):
+        pairs = t2b_generate(10)
+        for index, pair in enumerate(pairs):
+            assert pair["pair_id"] == f"t2b_{index + 1:04d}"
+
+    def test_generate_frequency_matched_is_false(self):
+        for pair in t2b_generate(10):
+            assert pair["frequency_matched"] is False
+
+    def test_generate_reproducible_with_same_seed(self):
+        assert t2b_generate(20, seed=3) == t2b_generate(20, seed=3)
+
+    def test_generate_different_seeds_give_different_order(self):
+        order_a = [(p["sentence_a"], p["sentence_b"]) for p in t2b_generate(20, seed=1)]
+        order_b = [(p["sentence_a"], p["sentence_b"]) for p in t2b_generate(20, seed=2)]
+        assert order_a != order_b
+
+    def test_generate_exceeds_max_raises(self):
+        with pytest.raises(ValueError, match="30"):
+            t2b_generate(31)
+
+    def test_generate_sentences_nonempty(self):
+        for pair in t2b_generate(10):
+            assert len(pair["sentence_a"]) > 0
+            assert len(pair["sentence_b"]) > 0
+
+    def test_behavioral_items_count(self):
+        assert len(t2b_behavioral_items()) == 12
+
+    def test_behavioral_items_required_keys(self):
+        for item in t2b_behavioral_items():
+            assert {"question", "choice_a", "choice_b", "correct"}.issubset(item.keys())
+
+    def test_behavioral_items_correct_field_valid(self):
+        for item in t2b_behavioral_items():
+            assert item["correct"] in ("a", "b")
