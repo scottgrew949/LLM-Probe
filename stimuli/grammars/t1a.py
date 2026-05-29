@@ -315,9 +315,9 @@ _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
         "correct": "a",
     },
     {
-        "question": "When a heater is turned on in a cold room, the temperature",
-        "choice_a": "rises",
-        "choice_b": "drops",
+        "question": "When someone smokes heavily for many years, the risk of developing cancer",
+        "choice_a": "increases",
+        "choice_b": "decreases",
         "correct": "a",
     },
     {
@@ -331,13 +331,13 @@ _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
     # Directly operationalizes Pearl's L3: P(Y | A was prevented).
     # "Had not been X" (past perfect subjunctive) = cause was actively prevented.
     # Correct completion = counterfactual absence of effect.
-    # These test whether the model tracks the SCM structure:
-    # if we intervene on the cause variable (set it to absent), the effect is absent.
+    # All items use "would not have ___" + single clear effect verb — this pattern
+    # is reliably answered by GPT-2 medium without default-state confusion.
 
     {
-        "question": "If the match had not been struck, the fire would not have",
-        "choice_a": "started",
-        "choice_b": "spread",
+        "question": "If the switch had not been flipped, the light would not have",
+        "choice_a": "turned on",
+        "choice_b": "gone out",
         "correct": "a",
     },
     {
@@ -353,15 +353,15 @@ _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
         "correct": "a",
     },
     {
-        "question": "If the heater had not been turned on, the room would have stayed",
-        "choice_a": "cold",
-        "choice_b": "warm",
+        "question": "Had the smoking never occurred, the cancer would not have",
+        "choice_a": "developed",
+        "choice_b": "spread",
         "correct": "a",
     },
     {
-        "question": "Had the rain not fallen, the ground would have stayed",
-        "choice_a": "dry",
-        "choice_b": "wet",
+        "question": "If the match had not been struck, the fire would never have",
+        "choice_a": "ignited",
+        "choice_b": "burned out",
         "correct": "a",
     },
     {
