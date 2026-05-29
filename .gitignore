@@ -1,0 +1,28 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Test cache
+.pytest_cache/
+
+# Generated / validated stimulus data (large, reproducible from grammars)
+stimuli/generated/
+stimuli/validated/
+stimuli/philbench/
+
+# Experiment results and outputs (produced by running experiments)
+experiments/*/results/
+experiments/*/config.json
+experiments/*/stimuli.jsonl
+
+# Claude local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store

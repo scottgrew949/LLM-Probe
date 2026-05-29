@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stimulus.schema.json",
+  "title": "StimulusPair",
+  "description": "A single stimulus pair for a PoL-Probe experiment. Each pair contrasts two sentences that differ on exactly the philosophical distinction being tested (e.g., opaque vs. transparent context, causal vs. associative reading). pair_id, thread_id, and theoretical labels are required for traceability back to the theory under test.",
+  "type": "object",
+  "required": [
+    "pair_id",
+    "thread_id",
+    "sentence_a",
+    "sentence_b",
+    "label_a",
+    "label_b",
+    "theoretical_distinction"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "pair_id": {
+      "type": "string",
+      "description": "Unique identifier. Convention: {thread_id}_{zero-padded-n}, e.g. t2_0042"
+    },
+    "thread_id": {
+      "type": "string",
+      "enum": ["t1", "t1a", "t1b", "t1c", "t2", "t2b", "t3", "t4", "t5", "t6"],
+      "description": "Which philosophical thread this pair belongs to"
+    },
+    "sentence_a": {
+      "type": "string",
+      "minLength": 1,
+      "description": "First sentence of the contrast pair"
+    },
+    "sentence_b": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Second sentence of the contrast pair"
+    },
+    "label_a": {
+      "type": "string",
+      "description": "Theoretical label for sentence_a under the theory being tested. E.g. 'opaque', 'causal_l3', 'grounded', 'rigid'"
+    },
+    "label_b": {
+      "type": "string",
+      "description": "Theoretical label for sentence_b. E.g. 'transparent', 'associative_l1', 'not_grounded', 'non_rigid'"
+    },
+    "theoretical_distinction": {
+      "type": "string",
+      "description": "Human-readable name of the philosophical distinction. E.g. 'Frege opaque vs transparent context', 'Pearl L3 vs L1', 'Fine grounding asymmetry'"
+    },
+    "frequency_matched": {
+      "type": "boolean",
+      "description": "True ONLY if validate_set() has verified corpus frequency matching (V7). Never set manually."
+    },
+    "token_lengths": {
+      "type": "object",
+      "description": "Token lengths under the target tokenizer. Set during validation.",
+      "properties": {
+        "sentence_a": { "type": "integer", "minimum": 1 },
+        "sentence_b": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "generation_grammar": {
+      "type": "string",
+      "description": "Which grammar file produced this pair. For traceability."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional: edge cases, construction decisions, ambiguities observed during generation."
+    }
+  }
+}
