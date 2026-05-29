@@ -284,15 +284,14 @@ _FREQUENCY_NOTES: str = (
 # Class 3: L3 vs L1 metalinguistic distinction — tests model distinguishes the rungs.
 
 _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
-    # ── Class 1: Causal direction (Pearl's canonical examples) ────────────────
+    # ── Class 1: Causal direction — SCM prerequisite ──────────────────────────
+    # Tests that GPT-2 knows the causal relationships in our domains.
+    # Required before L3 probing is interpretable — if the model does not
+    # know rain wets ground, probing its counterfactual encoding is meaningless.
+    # Grounded in Pearl's canonical SCM domains from "Causality" and "The Book of Why."
+
     {
-        "question": "When a match is struck against a rough surface, the result is that fire",
-        "choice_a": "ignites",
-        "choice_b": "goes out",
-        "correct": "a",
-    },
-    {
-        "question": "When it rains, the ground outside",
+        "question": "When rain falls on dry ground, the ground",
         "choice_a": "gets wet",
         "choice_b": "dries out",
         "correct": "a",
@@ -309,20 +308,36 @@ _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
         "choice_b": "deteriorates",
         "correct": "a",
     },
-
-    # ── Class 2: L3 counterfactual completion ─────────────────────────────────
-    # Tests whether the model correctly completes interventional counterfactuals.
-    # "Had not been struck" → the cause was prevented → effect absent.
     {
-        "question": "If the match had not been struck, the fire would not have",
-        "choice_a": "started",
-        "choice_b": "spread further",
+        "question": "When fertilizer is applied to soil, crops tend to",
+        "choice_a": "grow",
+        "choice_b": "die",
         "correct": "a",
     },
     {
-        "question": "Had the switch not been flipped, the light would have stayed",
-        "choice_a": "off",
-        "choice_b": "on",
+        "question": "When a heater is turned on in a cold room, the temperature",
+        "choice_a": "rises",
+        "choice_b": "drops",
+        "correct": "a",
+    },
+    {
+        "question": "When someone exercises regularly, their fitness",
+        "choice_a": "improves",
+        "choice_b": "declines",
+        "correct": "a",
+    },
+
+    # ── Class 2: L3 interventional counterfactual completion ──────────────────
+    # Directly operationalizes Pearl's L3: P(Y | A was prevented).
+    # "Had not been X" (past perfect subjunctive) = cause was actively prevented.
+    # Correct completion = counterfactual absence of effect.
+    # These test whether the model tracks the SCM structure:
+    # if we intervene on the cause variable (set it to absent), the effect is absent.
+
+    {
+        "question": "If the match had not been struck, the fire would not have",
+        "choice_a": "started",
+        "choice_b": "spread",
         "correct": "a",
     },
     {
@@ -337,35 +352,22 @@ _BEHAVIORAL_ITEMS: list[dict[str, Any]] = [
         "choice_b": "died",
         "correct": "a",
     },
-
-    # ── Class 3: L3 vs L1 metalinguistic distinction ──────────────────────────
-    # Tests whether the model distinguishes counterfactual intervention from
-    # statistical observation at the conceptual level.
-    # Completions are chosen to be answerable by distributional priors —
-    # "counterfactual reasoning" strongly co-occurs with "had not been" constructions
-    # in explanatory and philosophical texts.
     {
-        "question": "If the match had not been struck, the fire would not have started. This sentence describes a",
-        "choice_a": "counterfactual intervention",
-        "choice_b": "statistical observation",
+        "question": "If the heater had not been turned on, the room would have stayed",
+        "choice_a": "cold",
+        "choice_b": "warm",
         "correct": "a",
     },
     {
-        "question": "The sentence when matches are struck fires ignite describes a",
-        "choice_a": "statistical regularity",
-        "choice_b": "counterfactual intervention",
+        "question": "Had the rain not fallen, the ground would have stayed",
+        "choice_a": "dry",
+        "choice_b": "wet",
         "correct": "a",
     },
     {
-        "question": "Had the dam not been built, the valley would have flooded. This describes what would have happened if someone had",
-        "choice_a": "intervened to stop the construction",
-        "choice_b": "observed the flooding",
-        "correct": "a",
-    },
-    {
-        "question": "In areas without dams, valleys often flood. This statement is based on",
-        "choice_a": "observing patterns across cases",
-        "choice_b": "a hypothetical intervention",
+        "question": "If the exercise had not been performed, fitness would not have",
+        "choice_a": "improved",
+        "choice_b": "declined",
         "correct": "a",
     },
 ]
