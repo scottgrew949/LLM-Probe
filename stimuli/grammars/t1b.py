@@ -107,20 +107,21 @@ _BAROMETER_DOMAIN: dict[str, Any] = {
 
 FORWARD_TEMPLATES: list[str] = [
     "If {cause_noun} had {cause_verb_past}, {effect_noun} would have",
-    "Had {cause_noun} been {cause_verb_past}, {effect_noun} would have",
-    "If {cause_noun} had been {cause_verb_past}, {effect_noun} would certainly have",
-    "In a world where {cause_noun} was {cause_verb_past}, {effect_noun} would have",
-    "Had someone ensured {cause_noun} was {cause_verb_past}, {effect_noun} would have",
+    "Had {cause_noun} {cause_verb_past}, {effect_noun} would have",
+    "Suppose {cause_noun} had {cause_verb_past}; {effect_noun} would have",
+    "In a scenario where {cause_noun} had {cause_verb_past}, {effect_noun} would have",
+    "If {cause_noun} were to have {cause_verb_past}, {effect_noun} would have",
 ]
 
-# "must have" marks epistemic inference backwards through a causal chain —
-# the canonical backtracking marker. "would have" variants add lexical diversity.
+# Structurally identical to FORWARD_TEMPLATES — same sentence frames, cause/effect
+# slots swapped. The only difference is causal direction, not surface vocabulary.
+# Removing "must have", "Since", "Given that" — all discriminable at layer 0.
 BACKTRACKING_TEMPLATES: list[str] = [
-    "If {effect_noun} had {effect_past_state}, {cause_noun} must have",
-    "Had {effect_noun} {effect_past_state}, {cause_noun} must have",
     "If {effect_noun} had {effect_past_state}, {cause_noun} would have",
-    "Given that {effect_noun} had {effect_past_state}, {cause_noun} must have",
-    "Since {effect_noun} had {effect_past_state}, {cause_noun} would have",
+    "Had {effect_noun} {effect_past_state}, {cause_noun} would have",
+    "Suppose {effect_noun} had {effect_past_state}; {cause_noun} would have",
+    "In a scenario where {effect_noun} had {effect_past_state}, {cause_noun} would have",
+    "If {effect_noun} were to have {effect_past_state}, {cause_noun} would have",
 ]
 
 # Hand-authored complete strings — barometer domain requires specific negation

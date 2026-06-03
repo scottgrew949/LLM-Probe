@@ -175,10 +175,12 @@ layer_activation_sets = extract_activations(config, model)
 print("  Extraction complete.")
 print()
 
-# ── Step 5: Three-class probe at each layer ───────────────────────────────────
+# ── Step 5: Binary probe at each layer (forward_causal vs backtracking) ──────
+# Primary Lewis vs Pearl test — 2-class only.
+# common_cause items exist in the validated file but are filtered here:
+# they serve as an auxiliary analysis point, not the primary probe.
 
-print("[Step 5] Running three-class linear probe at each layer...")
-print("  Classes: forward_causal | backtracking | common_cause")
+print("[Step 5] Running binary probe at each layer (forward_causal vs backtracking)...")
 print()
 
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -187,25 +189,29 @@ probe_results_by_layer: dict[int, dict] = {}
 
 for activation_set in layer_activation_sets:
     layer_index = activation_set["layer"]
-    activations = np.array(activation_set["activations"])
-    labels = activation_set["labels"]
+    all_activations = np.array(activation_set["activations"])
+    all_labels = activation_set["labels"]
 
-    probe_result = run_linear_probe(activations, labels, config)
+    # Filter to forward_causal and backtracking only
+    binary_mask = [label in ("forward_causal", "backtracking") for label in all_labels]
+    binary_activations = all_activations[binary_mask]
+    binary_labels = [label for label, keep in zip(all_labels, binary_mask) if keep]
+
+    probe_result = run_linear_probe(binary_activations, binary_labels, config)
     probe_result["layer"] = layer_index
     probe_result["token_position"] = activation_set["token_position"]
 
     save_result(probe_result, RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json"))
     probe_results_by_layer[layer_index] = probe_result
 
-# Find peak layer by 3-class probe accuracy
 peak_probe_layer = max(
     probe_results_by_layer,
-    key=lambda l: probe_results_by_layer[l]["accuracy_mean"]
+    key=lambda layer_index: probe_results_by_layer[layer_index]["accuracy_mean"]
 )
 peak_probe_accuracy = probe_results_by_layer[peak_probe_layer]["accuracy_mean"]
 chance_baseline = probe_results_by_layer[peak_probe_layer]["chance_baseline"]
 
-print("  3-class probe complete.")
+print("  Binary probe complete.")
 print()
 
 # ── Step 6: Pairwise probes at peak layer ─────────────────────────────────────
