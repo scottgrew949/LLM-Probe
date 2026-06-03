@@ -263,15 +263,15 @@ def generate_behavioral_items() -> list[dict[str, Any]]:
     """Return behavioral gate items for T1c."""
     return [
         {
-            "question": "If a fair coin had landed heads, what would have happened?",
-            "choice_a": "heads would have come up",
-            "choice_b": "tails would have come up",
+            "question": "If the water temperature had been 99 degrees instead of 100, the water would have",
+            "choice_a": "not boiled",
+            "choice_b": "boiled",
             "correct": "a",
         },
         {
-            "question": "If the temperature had been just below boiling, the water would have",
-            "choice_a": "not boiled",
-            "choice_b": "boiled anyway",
+            "question": "If the student's score had been just above the passing mark, the student would have",
+            "choice_a": "passed",
+            "choice_b": "failed",
             "correct": "a",
         },
         {
@@ -281,9 +281,9 @@ def generate_behavioral_items() -> list[dict[str, Any]]:
             "correct": "a",
         },
         {
-            "question": "If the score had been one point above passing, the student would have",
-            "choice_a": "passed",
-            "choice_b": "failed",
+            "question": "If the drug had been administered, the patient would have",
+            "choice_a": "recovered",
+            "choice_b": "worsened",
             "correct": "a",
         },
     ]
