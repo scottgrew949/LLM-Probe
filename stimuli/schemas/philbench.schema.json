@@ -32,7 +32,7 @@
     },
     "thread_id": {
       "type": "string",
-      "enum": ["t1", "t1a", "t1b", "t1c", "t2", "t2b", "t3", "t4", "t5", "t6"]
+      "enum": ["t1", "t1a", "t1b", "t1c", "t1d", "t2", "t2b", "t2c", "t3", "t4", "t5", "t6"]
     },
     "theoretical_distinction": {
       "type": "string",
@@ -107,6 +107,24 @@
     "notes": {
       "type": "string",
       "description": "Optional: observations, anomalies, caveats for this item"
+    },
+    "circuit_components": {
+      "type": ["array", "null"],
+      "description": "Circuit components identified by head sweep. Populated when circuit_analysis_enabled=True, null otherwise.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "layer": { "type": "integer" },
+          "head": { "type": "integer" },
+          "kl_effect": { "type": "number" }
+        },
+        "required": ["layer", "head", "kl_effect"]
+      }
+    },
+    "identification_criterion": {
+      "type": ["string", "null"],
+      "description": "Causal identification criterion for T1d entries. 'back_door' | 'front_door' | null for all other threads.",
+      "enum": ["back_door", "front_door", null]
     }
   }
 }

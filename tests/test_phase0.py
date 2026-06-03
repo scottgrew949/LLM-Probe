@@ -664,3 +664,77 @@ class TestT1bGrammar:
     def test_behavioral_items_correct_field_valid(self):
         for item in t1b_behavioral_items():
             assert item["correct"] in ("a", "b")
+
+
+class TestNewConfigFields:
+    def test_t1d_and_t2c_are_valid_thread_ids(self):
+        config_t1d = _make_config(thread_id="t1d")
+        config_t2c = _make_config(thread_id="t2c")
+        assert config_t1d.thread_id == "t1d"
+        assert config_t2c.thread_id == "t2c"
+
+    def test_invalid_thread_id_raises(self):
+        with pytest.raises(ValueError, match="thread_id"):
+            _make_config(thread_id="t99")
+
+    def test_circuit_analysis_defaults_to_disabled(self):
+        config = _make_config()
+        assert config.circuit_analysis_enabled is False
+        assert config.circuit_kl_threshold == 0.1
+
+    def test_t1d_lock_requires_identification_criterion(self):
+        config = _make_config(thread_id="t1d")
+        config.expected_outcomes = {"test": "value"}
+        config.frequency_match_verified = True
+        config.stimulus_sha256 = "abc123"
+        # Use this test file itself as the stimulus_file so it exists
+        config.stimulus_file = __file__
+        with pytest.raises(ValueError, match="identification_criterion"):
+            config.lock()
+
+    def test_t1d_lock_requires_confounder_structure(self):
+        config = _make_config(thread_id="t1d", identification_criterion="back_door")
+        config.expected_outcomes = {"test": "value"}
+        config.frequency_match_verified = True
+        config.stimulus_sha256 = "abc123"
+        config.stimulus_file = __file__
+        with pytest.raises(ValueError, match="confounder_structure"):
+            config.lock()
+
+    def test_t2c_lock_requires_intension_type(self):
+        config = _make_config(thread_id="t2c")
+        config.expected_outcomes = {"test": "value"}
+        config.frequency_match_verified = True
+        config.stimulus_sha256 = "abc123"
+        config.stimulus_file = __file__
+        with pytest.raises(ValueError, match="intension_type"):
+            config.lock()
+
+
+class TestRunIdentificationProbe:
+    def test_binary_probe_separates_adjustable_from_not(self):
+        from probes.probes import run_identification_probe
+
+        rng = np.random.RandomState(42)
+        adjustable_activations = rng.randn(20, 10) + np.array([3.0] * 10)
+        not_adjustable_activations = rng.randn(20, 10) + np.array([-3.0] * 10)
+        activations = np.vstack([adjustable_activations, not_adjustable_activations])
+        labels = ["back_door_adjustable"] * 10 + ["front_door_adjustable"] * 10 + ["confounded_not_adjustable"] * 10 + ["unconfounded_control"] * 10
+
+        config = _make_config(thread_id="t1d")
+        result = run_identification_probe(activations, labels, config)
+
+        assert result["accuracy_mean"] > 0.80
+        assert result["probe_type"] == "identification_binary"
+        assert result["adjustable_class"] == "adjustable"
+        assert result["not_adjustable_class"] == "not_adjustable"
+
+    def test_returns_chance_baseline_at_50_percent_for_balanced(self):
+        from probes.probes import run_identification_probe
+
+        rng = np.random.RandomState(0)
+        activations = rng.randn(40, 8)
+        labels = ["back_door_adjustable"] * 10 + ["front_door_adjustable"] * 10 + ["confounded_not_adjustable"] * 10 + ["unconfounded_control"] * 10
+        config = _make_config(thread_id="t1d")
+        result = run_identification_probe(activations, labels, config)
+        assert result["chance_baseline"] == pytest.approx(0.5)

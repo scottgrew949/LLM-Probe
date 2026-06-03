@@ -52,7 +52,7 @@ class ExperimentConfig:
     """Unique run ID. Convention: {thread_id}_{model_short}_{YYYYMMDD}, e.g. t2_gpt2m_20260601"""
 
     thread_id: str
-    """Which philosophical thread: t1 | t1a | t1b | t1c | t2 | t2b | t3 | t4 | t5 | t6"""
+    """Which philosophical thread: t1 | t1a | t1b | t1c | t1d | t2 | t2b | t2c | t3 | t4 | t5 | t6"""
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model_id: str
@@ -188,11 +188,61 @@ class ExperimentConfig:
     Must be constructed from the ontology independently of the model.
     """
 
+    # ── Circuit analysis ──────────────────────────────────────────────────────
+    circuit_analysis_enabled: bool = False
+    """
+    When True, run head sweep and path patching after layer sweep. [INVARIANT V18]
+    Requires layer sweep results to exist before head sweep runs.
+    Set False for initial experiment runs — enable only on clean, validated data.
+    """
+
+    circuit_kl_threshold: float = 0.1
+    """
+    Minimum KL divergence for a (layer, head) pair to count as a circuit component.
+    Used by find_peak_circuit_components in circuits/circuit_finder.py.
+    """
+
+    # ── T1d — causal identification ───────────────────────────────────────────
+    identification_criterion: Optional[str] = None
+    """
+    [INVARIANT V14] Required non-null for T1d.
+    Which identification criterion the stimulus set tests.
+    Valid values: 'back_door' | 'front_door'
+    back_door: observed confounders; adjustment via back-door criterion.
+    front_door: hidden confounder with mediator; adjustment via front-door criterion.
+    """
+
+    confounder_structure: Optional[dict[str, Any]] = None
+    """
+    [INVARIANT V15] Required non-null for T1d.
+    Formal causal graph describing the confounded structure in the stimuli.
+    Expected keys: 'nodes', 'edges', 'criterion', 'adjustment_set'.
+    """
+
+    # ── T2c — two-dimensional semantics ───────────────────────────────────────
+    intension_type: Optional[str] = None
+    """
+    [INVARIANT V17] Required non-null for T2c.
+    Which intension dimension the stimulus set targets.
+    Valid values: 'primary' | 'secondary' | 'dissociation'
+    """
+
     # ── Bookkeeping ───────────────────────────────────────────────────────────
     run_timestamp: str = ""
     """ISO 8601 timestamp. Set automatically by run_experiment() at start."""
 
     def __post_init__(self) -> None:
+        valid_thread_ids = {
+            "t1", "t1a", "t1b", "t1c", "t1d",
+            "t2", "t2b", "t2c",
+            "t3", "t4", "t5", "t6",
+        }
+        if self.thread_id not in valid_thread_ids:
+            raise ValueError(
+                f"thread_id='{self.thread_id}' is not valid. "
+                f"Must be one of: {sorted(valid_thread_ids)}"
+            )
+
         # V6: behavioral gate floor — config cannot lower it
         if self.behavioral_gate_threshold < 0.70:
             raise ValueError(
@@ -273,5 +323,27 @@ class ExperimentConfig:
             raise ValueError(
                 "stimulus_sha256 is empty. Compute SHA256 of stimulus file and set it before locking."
             )
+
+        # V14: T1d requires identification_criterion
+        if self.thread_id == "t1d" and self.identification_criterion is None:
+            raise ValueError(
+                "identification_criterion is None (V14). "
+                "Set to 'back_door' or 'front_door' before locking T1d config."
+            )
+
+        # V15: T1d requires confounder_structure
+        if self.thread_id == "t1d" and self.confounder_structure is None:
+            raise ValueError(
+                "confounder_structure is None (V15). "
+                "Define the formal causal graph before locking T1d config."
+            )
+
+        # V17: T2c requires intension_type
+        if self.thread_id == "t2c" and self.intension_type is None:
+            raise ValueError(
+                "intension_type is None (V17). "
+                "Set to 'primary', 'secondary', or 'dissociation' before locking T2c config."
+            )
+
         self.pre_spec_locked = True
         # Caller must call to_json() after lock() to persist the updated config.

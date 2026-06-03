@@ -262,6 +262,61 @@ def check_phase_gate(config: ExperimentConfig) -> None:
                 f"T1b/T1c require T1a to confirm causal hierarchy before running."
             )
 
+    # For t1d: only require T1b summary exists (not outcome-gated)
+    # T1d interpretation depends on pearl_confirmed but does not gate on it
+    if config.thread_id == "t1d" and config.prerequisite_experiment_id:
+        t1b_summary_path = (
+            PROJECT_ROOT / "experiments" / config.prerequisite_experiment_id / "results" / "summary.json"
+        )
+        if not t1b_summary_path.exists():
+            raise FileNotFoundError(
+                f"V10: T1d requires T1b summary at {t1b_summary_path}. "
+                f"Run T1b first."
+            )
+
+    # V14: T1d requires identification_criterion
+    if config.thread_id == "t1d" and not config.identification_criterion:
+        raise ValueError(
+            "V14: identification_criterion is None for T1d. "
+            "Set to 'back_door' or 'front_door' before running."
+        )
+
+    # V15: T1d requires confounder_structure
+    if config.thread_id == "t1d" and not config.confounder_structure:
+        raise ValueError(
+            "V15: confounder_structure is None for T1d. "
+            "Define the formal causal graph before running."
+        )
+
+    # V16: T2c requires T2b gate passing
+    if config.thread_id == "t2c" and config.prerequisite_experiment_id:
+        t2b_summary_path = (
+            PROJECT_ROOT / "experiments" / config.prerequisite_experiment_id / "results" / "summary.json"
+        )
+        if not t2b_summary_path.exists():
+            raise FileNotFoundError(
+                f"V16: T2c requires T2b summary at {t2b_summary_path}. "
+                f"Run T2b on Llama 3.2 3B first."
+            )
+
+    # V17: T2c requires intension_type
+    if config.thread_id == "t2c" and not config.intension_type:
+        raise ValueError(
+            "V17: intension_type is None for T2c. "
+            "Set to 'primary', 'secondary', or 'dissociation' before running."
+        )
+
+    # V18: circuit analysis requires layer sweep results
+    if config.circuit_analysis_enabled:
+        layer_sweep_results_path = (
+            PROJECT_ROOT / "experiments" / config.thread_id / "results" / "layer_sweep.json"
+        )
+        if not layer_sweep_results_path.exists():
+            raise FileNotFoundError(
+                f"V18: circuit_analysis_enabled=True but layer_sweep.json not found "
+                f"at {layer_sweep_results_path}. Run layer sweep first."
+            )
+
     # V4: T5 requires asymmetry thresholds pre-specified from null distributions
     if config.thread_id == "t5" and config.t5_asymmetry_thresholds is None:
         raise ValueError("V4: T5 requires t5_asymmetry_thresholds set in config.")

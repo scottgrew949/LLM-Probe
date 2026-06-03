@@ -337,3 +337,48 @@ def run_knife_mi(
         "estimator": "knn-loo-proxy",
         "note": "Approximate — install knife package for Pimentel et al. 2020 estimator",
     }
+
+
+def run_identification_probe(
+    activations: np.ndarray,
+    labels: list[str],
+    config: Any,
+) -> dict[str, Any]:
+    """
+    Binary linear probe separating adjustable from not-adjustable causal structures.
+
+    Used by T1d to test whether model representations distinguish confounded
+    structures with a valid adjustment set from those without one. Collapses
+    the four T1d conditions into two groups:
+      adjustable:     back_door_adjustable | front_door_adjustable
+      not_adjustable: confounded_not_adjustable | unconfounded_control
+
+    The two-class grouping is fixed here — callers do not specify it. This
+    enforces that the identification criterion is always tested as a binary
+    distinction, not a four-way one.
+
+    Args:
+        activations: np.ndarray of shape (n_items, hidden_dim).
+        labels: list of strings from T1d label set:
+            "back_door_adjustable" | "front_door_adjustable" |
+            "confounded_not_adjustable" | "unconfounded_control"
+        config: ExperimentConfig. thread_id should be "t1d".
+
+    Returns:
+        All fields from run_linear_probe, plus:
+          "probe_type": "identification_binary"
+          "adjustable_class": "adjustable"
+          "not_adjustable_class": "not_adjustable"
+    """
+    adjustable_label_set = {"back_door_adjustable", "front_door_adjustable"}
+
+    binary_labels = [
+        "adjustable" if label in adjustable_label_set else "not_adjustable"
+        for label in labels
+    ]
+
+    probe_result = run_linear_probe(activations, binary_labels, config)
+    probe_result["probe_type"] = "identification_binary"
+    probe_result["adjustable_class"] = "adjustable"
+    probe_result["not_adjustable_class"] = "not_adjustable"
+    return probe_result
