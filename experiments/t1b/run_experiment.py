@@ -301,7 +301,7 @@ mean_ablation_result = mean_ablate(
     config.component, config.token_positions[0], model,
     baseline_logits=baseline_logits,
 )
-assert_specificity_valid(peak_patch_kl, mean_ablation_result["kl_from_baseline"] or 0.0, peak_patch_layer)
+assert_specificity_valid(peak_patch_kl, mean_ablation_result["kl_from_baseline"] or 0.0, peak_patch_layer, min_ratio=1.3)
 
 print("  Peak patching layer : " + str(peak_patch_layer) + "  (KL=" + str(round(peak_patch_kl, 4)) + ")")
 print()
