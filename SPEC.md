@@ -46,6 +46,24 @@ Expected outcomes:
 - Graph-structured clustering → Pearlian
 - Flat/symmetric → neither
 
+**T1d — Causal Identification (do-calculus)**
+
+Runs after T1c. Tests whether model representations respect do-calculus identification conditions — specifically, whether the model internally distinguishes confounded structures with a valid adjustment set from those without one.
+
+T1d is informative regardless of T1b outcome:
+- If T1b = Pearl: tests whether Pearl-consistent representations respect identification constraints (strong claim — full do-calculus).
+- If T1b = Lewis: tests whether Lewis-consistent representations fail identification tests (consistent with worlds-ordering having no notion of adjustability).
+
+Four stimulus conditions:
+- `back_door_adjustable` — confounded, observed covariate blocks back-door path. Back-door adjustment valid.
+- `front_door_adjustable` — hidden confounder, mediator observed. Front-door adjustment valid.
+- `confounded_not_adjustable` — confounded, no valid adjustment set. Effect not identified.
+- `unconfounded_control` — direct causation, no confounding. Trivially identified.
+
+Primary mechanistic output: binary identification probe (adjustable vs not_adjustable) + layer-resolved curves.
+
+`identification_criterion` and `confounder_structure` required in config before lock (V14, V15). Prerequisite: T1b complete.
+
 ---
 
 ### T2: Sense and Reference — Frege, Not Quine
@@ -90,6 +108,21 @@ Expected outcomes:
 - Some class 3 pairs converge → sub-intensional, model coarser than possible-worlds semantics
 
 **Model requirement:** T2b requires a model with reliable mathematical knowledge (prime/composite/odd number theory). GPT-2 medium and Pythia 1.4B both fail the behavioral gate on this domain. T2b runs in Phase 7 on Llama 3.2 3B alongside the full cross-architecture sweep.
+
+---
+
+### T2c: Two-Dimensional Semantics — Chalmers
+
+Runs after T2b on Llama 3.2 3B (Phase 7). Tests whether Llama encodes Chalmers' primary/secondary intension distinction.
+
+T2b established hyperintensionality — distinctions finer than possible worlds. T2c asks whether those distinctions are organized along the primary/secondary intension axis specifically.
+
+Three stimulus conditions (one experiment run per condition):
+- `primary_sensitive` — terms with same secondary intension but different primary (water vs H2O in epistemic context). Expected: representations diverge.
+- `secondary_necessary` — metaphysically necessary identity statements. Expected: representations converge.
+- `primary_secondary_dissociation` — secondarily necessary but primarily contingent (Chalmers signature case). Expected: third distinct geometric cluster.
+
+`intension_type` required in config before lock (V17). Prerequisite: T2b behavioral gate passing on Llama 3.2 3B (V16). Never runs on GPT-2 or Pythia — those models lack reliable scientific identity knowledge.
 
 ---
 
@@ -181,6 +214,80 @@ Expected outcomes:
 
 ---
 
+### T7: Epistemic Contextualism — DeRose / Lewis / Cohen
+
+Contextualist claim: extension of "knows" shifts with salience of error-possibilities and stakes in attributor's context (Lewis "Elusive Knowledge" 1996; DeRose 1995; Cohen 1988). Invariantist competitor: standards fixed, context irrelevant to truth value of knowledge attribution (Hawthorne *Knowledge and Lotteries*). Relativist competitor: truth assessment-sensitive, not utterance-context-sensitive (MacFarlane).
+
+Central question: do representations of "knows P" shift geometrically with contextual stakes framing, or remain stable?
+
+Three conditions:
+- `low_stakes` — everyday stakes, few relevant alternatives salient. `"We sometimes go on Saturdays. John knows the bank will be open."` Contextualist: "knows" true.
+- `high_stakes` — same epistemic situation, high practical stakes. Deposit required or lose house. Contextualist: same claim false — skeptical alternative now relevant. Invariantist: same truth value as `low_stakes`.
+- `skeptical` — radical skeptical alternative made explicit in context. Baseline for maximum standard elevation. Contextualist: "knows" false in both conditions above this threshold.
+
+Minimum 30 minimal pairs per condition. Template grammar required — same propositional content, varied stakes framing only. Do not hand-author.
+
+Primary mechanistic output: linear probe + layer-resolved activation patching on "knows" token position across conditions.
+
+Expected outcomes:
+- Representation of "knows P" shifts with stakes condition → contextualist signature
+- Representation stable across conditions → invariantist / topic-neutral
+- Third cluster distinct from low/high → relativist (assessment-sensitivity)
+
+`stakes_level` required in config before lock (V19). Phase 8, primary on Pythia 1.4B + replication on Llama 3.2 3B.
+
+---
+
+### T8: Kratzer Modal Partition — Epistemic vs. Circumstantial
+
+Kratzer: modals are quantifiers over accessible worlds; modal base parameter determines which worlds qualify (Kratzer "Modality" 1981, 2012). Epistemic base = worlds consistent with speaker's evidence. Circumstantial base = worlds consistent with relevant physical facts. Same surface operator "might" / "must" — different semantic value depending on base.
+
+Competing: uniform modal force (no partition encoded — all "might" identical regardless of context). Distinct from T2c two-dimensional semantics — T2c tests intension type on terms; T8 tests modal base parameter on operators.
+
+Three conditions (disambiguating context required in every stimulus — same surface operator across all three):
+- `epistemic` — modal base = speaker's evidence. `"The keys might be in the drawer"` (I have not checked). Quantifies over epistemically accessible worlds.
+- `circumstantial` — modal base = physical/causal circumstances. `"The bridge might hold under that load"` (given structural properties). Quantifies over circumstantially accessible worlds.
+- `deontic` — modal base = normatively ideal worlds. `"You might leave early"` (it is permitted). Positive control — most distinct from epistemic; deontic and epistemic should diverge most.
+
+Minimum 30 minimal pairs per condition. Frequency-match modal operator across conditions.
+
+Primary mechanistic output: linear probe + activation patching on modal operator token position across conditions.
+
+Expected outcomes:
+- Geometric separation of epistemic from circumstantial at same surface form → Kratzer partition encoded
+- No separation → uniform modal force, no base distinction
+- Epistemic clusters with deontic → model conflates evidence-based and permission modality
+
+`modal_base` required in config before lock (V20). Phase 8, primary on GPT-2 medium + replication on Pythia 1.4B.
+
+---
+
+### T9: De Se Belief — Lewis / Perry
+
+Lewis: belief is relation to property, not proposition. Self-locating belief requires centered world ⟨world, agent, time⟩ — irreducible to any de dicto propositional content (Lewis "Attitudes De Dicto and De Se" 1979). Perry's essential indexical: `"I am making the mess"` triggers different downstream behavior than `"Scott is making the mess"` even when coreferential — indexical non-eliminable (Perry 1979).
+
+Competing: propositionalism — de se reducible to de dicto via description. `"I believe I am the tallest"` paraphrases to `"John believes John is the tallest"` without residue.
+
+Three conditions:
+- `de_se` — self-locating indexical belief. `"I don't know who I am."` / `"I believe I am being followed."` Centered-world content irreducible to proposition. Lewis: no propositional equivalent.
+- `de_dicto` — propositional belief, same content, no essential indexical. `"John doesn't know that he is John."` / `"Mary believes the followed person is in danger."` Propositionalist: equivalent to paired de_se stimulus.
+- `de_re` — belief about object under acquaintance. `"John believes of Mary that she is the tallest."` Positive control — distinct from both de_se and de_dicto.
+
+Stimulus domains: amnesia cases (Lingens library, Heimson), Sleeping Beauty variants, Perry grocery-store cases. Minimum 30 pairs per condition. Template grammar required.
+
+Primary mechanistic output: linear probe + activation patching on belief-report verb + embedded clause position across conditions.
+
+Expected outcomes:
+- De se clusters distinct from de dicto for propositionally equivalent pairs → Lewis primitive encoded; centered-worlds irreducible
+- De se clusters with de dicto → propositionalism, no self-locating primitive
+- De se + de re cluster together, de dicto separate → direct-reference encoding, not centered-worlds
+
+Model requirement: T9 requires strong indexical and propositional attitude comprehension. GPT-2 medium and Pythia 1.4B expected to fail behavioral gate on Sleeping Beauty / Lingens cases. T9 runs in Phase 9 on Llama 3.2 3B only — never on GPT-2 or Pythia.
+
+`attitude_type` required in config before lock (V21). T9 `run.py` asserts `model_id` is Llama 3.2 3B before experiment proceeds (V22). Phase 9.
+
+---
+
 ## §M Methodology
 
 **Rigorous = L2 + L3 + surface-stats null. All three required.**
@@ -210,6 +317,8 @@ Each phase ships something independently runnable. Next phase does not start unt
 | 5 | T4 complete + replication | Ontological commitment RSA |
 | 6 | T5 + T6 complete + replication | Grounding asymmetry, rigid designation |
 | 7 | Full cross-architecture sweep | T1–T6 on Llama 3.2 3B |
+| 8 | T7 + T8 complete + replication | Epistemic contextualism, Kratzer modal partition |
+| 9 | T9 complete (Llama 3.2 3B only) | De se / centered-worlds vs. propositionalism |
 
 ---
 
@@ -235,6 +344,9 @@ Each phase ships something independently runnable. Next phase does not start unt
 | 7 | T4 experiments | Quine "On What There Is" + Tenney et al. |
 | 8 | T5 + T6 experiments | Fine "Question of Ontology" + Kripke *Naming and Necessity* ch.1 + Nanda Othello-GPT |
 | 9 | Full cross-architecture sweep | — |
+| 10 | T7 experiments | DeRose "Solving the Skeptical Problem" + Hawthorne *Knowledge and Lotteries* ch.1 + Lewis "Elusive Knowledge" |
+| 11 | T8 experiments | Kratzer "Modality" (in Arnim von Stechow & Wunderlich eds.) + von Fintel "Modality and Language" |
+| 12 | T9 experiments | Lewis "Attitudes De Dicto and De Se" + Perry "The Problem of the Essential Indexical" + Elga "Self-Locating Belief and the Sleeping Beauty Problem" |
 
 **Per thread — after running:**
 Write one page: what did the results raise that the theory did not predict? That page is where originality lives.
@@ -249,7 +361,7 @@ Write one page: what did the results raise that the theory did not predict? That
 - **Separation of concerns** — stimuli, extraction, probing, intervention, visualization are independent layers. Philosophy work touches stimuli only.
 - **Incremental verifiability** — every function testable in isolation before use in experiment.
 - **Schema first** — stimulus schema, activation schema, result schema defined before code written. All data flows through them.
-- **No premature abstraction** — build for six threads that exist. Generalize only when third thread proves pattern.
+- **No premature abstraction** — build for nine threads that exist. Generalize only when third thread proves pattern.
 
 ---
 
@@ -311,6 +423,9 @@ expected_outcomes: dict
 prerequisite_experiment_id: str | None  # T1b/T1c require T1a summary with level3_confirmed=True
 ontology_version: str | None      # required non-null for T4 — specifies BFO/DOLCE version used
 matrix_source: str | None         # required non-null for T4 — documents which relations drive RSA matrix
+stakes_level: str | None          # required non-null for T7 — 'low' | 'high' | 'skeptical'
+modal_base: str | None            # required non-null for T8 — 'epistemic' | 'circumstantial' | 'deontic'
+attitude_type: str | None         # required non-null for T9 — 'de_se' | 'de_dicto' | 'de_re'
 ```
 
 **Enforcement rules baked into code:**
@@ -322,6 +437,10 @@ matrix_source: str | None         # required non-null for T4 — documents which
 - `run_rsa` asserts `ontology_version` and `matrix_source` non-null for T4
 - `behavioral_gate_threshold` floor: `run_behavioral_gate` raises `ValueError` if threshold < 0.70
 - `frequency_match_verified` is set exclusively by `validate_set` — no external setter
+- `check_phase_gate` asserts `stakes_level` non-null before T7 runs
+- `check_phase_gate` asserts `modal_base` non-null before T8 runs
+- `check_phase_gate` asserts `attitude_type` non-null before T9 runs
+- T9 `run.py` asserts `model_id` contains "llama" (case-insensitive) before experiment proceeds
 
 **Stack:**
 ```
@@ -343,7 +462,7 @@ matplotlib          # visualization
 
 ## §B Benchmark Output
 
-PhilBench: theory-annotated minimal pairs across all six threads.
+PhilBench: theory-annotated minimal pairs across all nine threads.
 
 Each entry: sentence, philosophical category, formal theory source, competing prediction, falsification condition, corpus frequency of key terms.
 
@@ -363,3 +482,12 @@ V7: frequency matching within one order of magnitude verified before stimulus fi
 V8: behavioral pass-rate gate >70% on forced-choice version of each stimulus set before mechanistic analysis
 V9: SAE double dissociation — stretch goal T1 only. Required only if basic patching is complete and clean. Never blocks phase completion.
 V10: surface-statistics null hypothesis computed ∀ thread before philosophical interpretation
+V14: `identification_criterion` non-null required before T1d config locks or runs.
+V15: `confounder_structure` non-null required before T1d config locks or runs.
+V16: T2c requires T2b behavioral gate passing on Llama 3.2 3B — enforced via `prerequisite_experiment_id`. T2c is moot if the model is not hyperintensional.
+V17: `intension_type` non-null required before T2c config locks or runs. Valid values: 'primary' | 'secondary' | 'dissociation'.
+V18: `circuit_analysis_enabled=True` requires layer_sweep.json to exist in the thread's results directory before head sweep runs.
+V19: `stakes_level` non-null required before T7 config locks or runs. Valid values: 'low' | 'high' | 'skeptical'.
+V20: `modal_base` non-null required before T8 config locks or runs. Valid values: 'epistemic' | 'circumstantial' | 'deontic'.
+V21: `attitude_type` non-null required before T9 config locks or runs. Valid values: 'de_se' | 'de_dicto' | 'de_re'.
+V22: T9 runs only on Llama 3.2 3B — `run.py` asserts model_id before experiment proceeds. GPT-2 and Pythia expected to fail behavioral gate on Lingens/Sleeping Beauty cases; never run T9 on those models.
