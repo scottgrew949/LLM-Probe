@@ -26,3 +26,5 @@ experiments/*/stimuli.jsonl
 
 # OS
 .DS_Store
+.claude/
+docs/superpowers/
