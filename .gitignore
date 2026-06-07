@@ -21,6 +21,10 @@ experiments/*/results/
 experiments/*/config.json
 experiments/*/stimuli.jsonl
 
+# Task tracker — contains a personal access token, keep out of future commits
+TASKS.md
+PersonalTokens.txt
+
 # Claude local settings
 .claude/settings.local.json
 

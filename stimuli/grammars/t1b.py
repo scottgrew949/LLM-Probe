@@ -75,14 +75,14 @@ DOMAINS: list[dict[str, Any]] = _t1a_module.DOMAINS
 # templates — "If {effect_noun} had {effect_past_state}, {cause_noun} must have"
 _EFFECT_PAST_STATE: dict[str, str] = {
     "match_fire":      "ignited",
-    "rain_ground":     "been wet",
+    "rain_ground":     "flooded",       # "been wet" (2w) → "flooded" (1w): matches cause_verb_past "fallen" (1w)
     "drug_recovery":   "recovered",
     "fertilizer_crop": "grown",
-    "switch_light":    "turned on",
+    "switch_light":    "lit",           # "turned on" (2w) → "lit" (1w): matches cause_verb_past "flipped" (1w)
     "watering_plant":  "grown",
-    "study_exam":      "passed the exam",
+    "study_exam":      "passed",        # "passed the exam" (3w) → "passed" (1w): matches cause_verb_past "done" (1w)
     "exercise_fitness":"improved",
-    "heater_temp":     "warmed",
+    "heater_temp":     "heated up",    # "warmed" (1w) → "heated up" (2w): matches cause_verb_past "turned on" (2w)
     "smoking_cancer":  "developed",
 }
 

@@ -69,7 +69,8 @@ if not t1b_summary_path.exists():
 from extraction.extractor import compute_sha256, extract_activations
 from experiments.config import ExperimentConfig
 from experiments.run import run_surface_null, check_phase_gate
-from probes.probes import run_linear_probe, run_identification_probe
+from stimuli.pipeline import verify_stimulus_file_frequency_matched
+from probes.probes import run_linear_probe, run_identification_probe, IDENTIFIED_T1D_LABELS
 from interventions.interventions import run_layer_sweep, assert_specificity_valid, mean_ablate
 from core.io import load_result, save_result
 import torch
@@ -158,7 +159,7 @@ config = ExperimentConfig(
     probe_type="linear",
     stimulus_file=str(VALIDATED_PATH),
     stimulus_sha256=compute_sha256(VALIDATED_PATH),
-    frequency_match_verified=True,
+    frequency_match_verified=verify_stimulus_file_frequency_matched(VALIDATED_PATH),
     expected_outcomes=expected_outcomes_description,
     prerequisite_experiment_id=T1B_PREREQUISITE_ID,
     identification_criterion="back_door",
@@ -211,7 +212,10 @@ for activation_set in layer_activation_sets:
     layer_activations = np.array(activation_set["activations"])
     layer_labels = activation_set["labels"]
 
-    probe_result = run_linear_probe(layer_activations, layer_labels, config)
+    # pair_group_ids keeps both sentences of a minimal pair in one fold (S4).
+    probe_result = run_linear_probe(
+        layer_activations, layer_labels, config, pair_ids=activation_set["pair_group_ids"]
+    )
     probe_result["layer"] = layer_index
     save_result(probe_result, RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json"))
     probe_results_by_layer[layer_index] = probe_result
@@ -231,7 +235,9 @@ peak_activation_set = next(s for s in layer_activation_sets if s["layer"] == pea
 peak_activations = np.array(peak_activation_set["activations"])
 peak_labels = peak_activation_set["labels"]
 
-identification_probe_result = run_identification_probe(peak_activations, peak_labels, config)
+identification_probe_result = run_identification_probe(
+    peak_activations, peak_labels, config, pair_ids=peak_activation_set["pair_group_ids"]
+)
 identification_probe_result["layer"] = peak_probe_layer
 save_result(identification_probe_result, RESULTS_DIR / "identification_probe.json")
 
@@ -243,16 +249,19 @@ print()
 
 # ── Step 7: Layer sweep (L3) ──────────────────────────────────────────────────
 
-print("[Step 7] Running layer sweep (adjustable -> not_adjustable direction)...")
+print("[Step 7] Running layer sweep (identified -> not-identifiable direction)...")
 
-adjustable_label_set = {"back_door_adjustable", "front_door_adjustable"}
-adjustable_indices = [
-    i for i, label in enumerate(layer_activation_sets[0]["labels"])
-    if label in adjustable_label_set
+# Patch the SAME contrast the L2 identification probe tests: source = mean of
+# all identified conditions (incl. unconfounded_control), target = the single
+# not-identifiable condition. Uses the shared IDENTIFIED_T1D_LABELS so L2 and L3
+# cannot diverge.
+identified_indices = [
+    i for i, condition_label in enumerate(layer_activation_sets[0]["labels"])
+    if condition_label in IDENTIFIED_T1D_LABELS
 ]
 
-mean_adjustable_activation_by_layer: dict[int, np.ndarray] = {
-    activation_set["layer"]: np.array(activation_set["activations"])[adjustable_indices].mean(axis=0)
+mean_identified_activation_by_layer: dict[int, np.ndarray] = {
+    activation_set["layer"]: np.array(activation_set["activations"])[identified_indices].mean(axis=0)
     for activation_set in layer_activation_sets
 }
 
@@ -268,7 +277,7 @@ with VALIDATED_PATH.open("r") as validated_file:
 target_run_config = {"stimulus": not_adjustable_sentences[-1]}
 
 sweep_result = run_layer_sweep(
-    mean_adjustable_activation_by_layer,
+    mean_identified_activation_by_layer,
     target_run_config,
     config.layer_range,
     config.component,

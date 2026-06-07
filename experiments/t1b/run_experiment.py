@@ -69,6 +69,7 @@ from extraction.extractor import compute_sha256
 from experiments.config import ExperimentConfig
 from experiments.run import run_surface_null, check_phase_gate
 from extraction.extractor import extract_activations
+from stimuli.pipeline import verify_stimulus_file_frequency_matched
 from probes.probes import run_linear_probe
 from interventions.interventions import run_layer_sweep, assert_specificity_valid, mean_ablate
 from core.io import load_result, save_result
@@ -128,7 +129,7 @@ config = ExperimentConfig(
     probe_type="linear",
     stimulus_file=str(VALIDATED_PATH),
     stimulus_sha256=compute_sha256(VALIDATED_PATH),
-    frequency_match_verified=True,
+    frequency_match_verified=verify_stimulus_file_frequency_matched(VALIDATED_PATH),
     expected_outcomes=expected_outcomes,
     prerequisite_experiment_id=T1A_PREREQUISITE_ID,
 )
@@ -181,7 +182,28 @@ print()
 # they serve as an auxiliary analysis point, not the primary probe.
 
 print("[Step 5] Running binary probe at each layer (forward_causal vs backtracking)...")
+
+# Surface diagnostic: print 3 example sentences per class with word counts.
+# Unequal lengths cause positional-embedding confounds at layer 0 — check here.
+import json as _json
+sentence_samples: dict[str, list[tuple[str, int]]] = {"forward_causal": [], "backtracking": [], "common_cause": []}
+with VALIDATED_PATH.open("r") as _diag_file:
+    for _raw_line in _diag_file:
+        _stripped = _raw_line.strip()
+        if not _stripped:
+            continue
+        _pair = _json.loads(_stripped)
+        for _key, _lbl in (("sentence_a", _pair["label_a"]), ("sentence_b", _pair["label_b"])):
+            if _lbl in sentence_samples and len(sentence_samples[_lbl]) < 3:
+                sentence_samples[_lbl].append((_pair[_key], len(_pair[_key].split())))
+
+print("  Sample sentences by class (word count shown):")
+for _label in ("forward_causal", "backtracking", "common_cause"):
+    print("  [" + _label + "]")
+    for _sent, _wc in sentence_samples[_label]:
+        print("    (" + str(_wc) + "w) " + _sent)
 print()
+
 
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -192,12 +214,17 @@ for activation_set in layer_activation_sets:
     all_activations = np.array(activation_set["activations"])
     all_labels = activation_set["labels"]
 
-    # Filter to forward_causal and backtracking only
+    # Filter to forward_causal and backtracking only. Filter the group ids in
+    # lockstep so both sentences of a surviving pair keep their shared id (S4).
+    all_pair_group_ids = activation_set["pair_group_ids"]
     binary_mask = [label in ("forward_causal", "backtracking") for label in all_labels]
     binary_activations = all_activations[binary_mask]
     binary_labels = [label for label, keep in zip(all_labels, binary_mask) if keep]
+    binary_pair_group_ids = [pair_group_id for pair_group_id, keep in zip(all_pair_group_ids, binary_mask) if keep]
 
-    probe_result = run_linear_probe(binary_activations, binary_labels, config)
+    probe_result = run_linear_probe(
+        binary_activations, binary_labels, config, pair_ids=binary_pair_group_ids
+    )
     probe_result["layer"] = layer_index
     probe_result["token_position"] = activation_set["token_position"]
 
@@ -211,6 +238,15 @@ peak_probe_layer = max(
 peak_probe_accuracy = probe_results_by_layer[peak_probe_layer]["accuracy_mean"]
 chance_baseline = probe_results_by_layer[peak_probe_layer]["chance_baseline"]
 
+layer_0_accuracy = probe_results_by_layer[0]["accuracy_mean"]
+if layer_0_accuracy > 0.70:
+    print()
+    print("  WARNING: Layer 0 probe accuracy = " + str(round(layer_0_accuracy * 100, 1)) + "%")
+    print("  Layer 0 is raw token + positional embeddings — no attention, no context.")
+    print("  High accuracy here = surface confound (sentence length or template keyword).")
+    print("  Inspect sample sentences above. Do NOT interpret L2 probe as causal-structure evidence.")
+    print()
+
 print("  Binary probe complete.")
 print()
 
@@ -222,15 +258,22 @@ print("[Step 6] Running pairwise probes at peak layer " + str(peak_probe_layer) 
 peak_activation_set = next(s for s in layer_activation_sets if s["layer"] == peak_probe_layer)
 all_activations = np.array(peak_activation_set["activations"])
 all_labels = peak_activation_set["labels"]
+all_pair_group_ids = peak_activation_set["pair_group_ids"]
 
 def pairwise_probe_accuracy(label_a: str, label_b: str) -> float:
     """Train binary probe on the two specified conditions, return accuracy."""
-    mask = [l in (label_a, label_b) for l in all_labels]
-    filtered_activations = all_activations[mask]
-    filtered_labels = [l for l in all_labels if l in (label_a, label_b)]
+    condition_membership_mask = [condition_label in (label_a, label_b) for condition_label in all_labels]
+    filtered_activations = all_activations[condition_membership_mask]
+    filtered_labels = [condition_label for condition_label in all_labels if condition_label in (label_a, label_b)]
+    # Group ids filtered in lockstep with the rows, so a pair stays in one fold (S4).
+    filtered_pair_group_ids = [
+        pair_group_id for pair_group_id, keep in zip(all_pair_group_ids, condition_membership_mask) if keep
+    ]
     if len(set(filtered_labels)) < 2:
         return 0.5
-    result = run_linear_probe(filtered_activations, filtered_labels, config)
+    result = run_linear_probe(
+        filtered_activations, filtered_labels, config, pair_ids=filtered_pair_group_ids
+    )
     return result["accuracy_mean"]
 
 forward_vs_backtracking = pairwise_probe_accuracy("forward_causal", "backtracking")
@@ -255,24 +298,24 @@ print()
 
 print("[Step 7] Running layer sweep (L3 patching — forward_causal into backtracking)...")
 
-forward_indices = [i for i, l in enumerate(layer_activation_sets[0]["labels"]) if l == "forward_causal"]
-backtracking_indices = [i for i, l in enumerate(layer_activation_sets[0]["labels"]) if l == "backtracking"]
+forward_indices = [i for i, condition_label in enumerate(layer_activation_sets[0]["labels"]) if condition_label == "forward_causal"]
+backtracking_indices = [i for i, condition_label in enumerate(layer_activation_sets[0]["labels"]) if condition_label == "backtracking"]
 
 mean_forward_by_layer: dict[int, np.ndarray] = {
-    act_set["layer"]: np.array(act_set["activations"])[forward_indices].mean(axis=0)
-    for act_set in layer_activation_sets
+    layer_activation_bundle["layer"]: np.array(layer_activation_bundle["activations"])[forward_indices].mean(axis=0)
+    for layer_activation_bundle in layer_activation_sets
 }
 
 # Use last backtracking sentence as target
 backtracking_sentences = []
 import json
-with VALIDATED_PATH.open("r") as f:
-    for raw_line in f:
+with VALIDATED_PATH.open("r") as validated_jsonl_file:
+    for raw_line in validated_jsonl_file:
         stripped = raw_line.strip()
         if stripped:
-            pair = json.loads(stripped)
-            if pair.get("label_b") == "backtracking":
-                backtracking_sentences.append(pair["sentence_b"])
+            stimulus_pair = json.loads(stripped)
+            if stimulus_pair.get("label_b") == "backtracking":
+                backtracking_sentences.append(stimulus_pair["sentence_b"])
 
 target_run_config = {"stimulus": backtracking_sentences[-1]}
 
@@ -304,6 +347,25 @@ mean_ablation_result = mean_ablate(
 assert_specificity_valid(peak_patch_kl, mean_ablation_result["kl_from_baseline"] or 0.0, peak_patch_layer, min_ratio=1.3)
 
 print("  Peak patching layer : " + str(peak_patch_layer) + "  (KL=" + str(round(peak_patch_kl, 4)) + ")")
+
+# L3 direction verification: confirm patch shifts predictions toward forward_causal.
+# The patching argument is forward_mean → backtracking target. If L3 is real,
+# the patched distribution should assign higher probability to forward-typical
+# completions (effect past participles) and lower probability to
+# backtracking-typical completions (cause past participles).
+print()
+print("  L3 direction check:")
+print("  Baseline completions (backtracking target, before patch):")
+with torch.no_grad():
+    direction_check_logits = model(target_run_config["stimulus"])[0, -1, :]
+    direction_check_probs  = torch.softmax(direction_check_logits, dim=-1)
+    top_tokens = direction_check_probs.topk(10)
+for token_prob, token_idx in zip(top_tokens.values.tolist(), top_tokens.indices.tolist()):
+    token_str = model.tokenizer.decode([token_idx])
+    print("    " + repr(token_str) + " " + str(round(token_prob * 100, 2)) + "%")
+print()
+print("  Compare top-10 above to what the same sentence produces after patching.")
+print("  If patching shifts the top token from a cause-verb toward an effect-verb, L3 direction confirmed.")
 print()
 
 # ── Step 8: Determine Lewis vs Pearl ─────────────────────────────────────────
@@ -356,14 +418,14 @@ print()
 print("  Layer   Accuracy    Chance")
 print("  -----   --------   ------")
 for layer_index in range(GPT2_MEDIUM_N_LAYERS):
-    probe = probe_results_by_layer[layer_index]
-    acc    = probe["accuracy_mean"]
-    chance = probe["chance_baseline"]
+    layer_probe_result    = probe_results_by_layer[layer_index]
+    layer_probe_accuracy  = layer_probe_result["accuracy_mean"]
+    layer_chance_baseline = layer_probe_result["chance_baseline"]
     marker = "  <-- PEAK" if layer_index == peak_probe_layer else ""
     print(
         "  " + str(layer_index).rjust(5) +
-        "   " + str(round(acc * 100, 1)).rjust(6) + "%" +
-        "   " + str(round(chance * 100, 1)).rjust(5) + "%" +
+        "   " + str(round(layer_probe_accuracy * 100, 1)).rjust(6) + "%" +
+        "   " + str(round(layer_chance_baseline * 100, 1)).rjust(5) + "%" +
         marker
     )
 

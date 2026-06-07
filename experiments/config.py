@@ -139,9 +139,11 @@ class ExperimentConfig:
     # ── Behavioral gate ───────────────────────────────────────────────────────
     frequency_match_verified: bool = False
     """
-    [INVARIANT V5] Set only by validate_set() in pipeline.py, never manually.
-    Ensures corpus frequency of sentence_a ≈ sentence_b before extraction,
-    so probe differences reflect semantics not surface statistics.
+    [INVARIANT V7] Derive from the validated stimulus file via
+    stimuli.pipeline.verify_stimulus_file_frequency_matched(stimulus_file) —
+    never hardcode True. Ensures corpus frequency of sentence_a ≈ sentence_b
+    before extraction, so probe differences reflect semantics not surface
+    statistics. lock() and the V7 phase gate both require this True.
     """
 
     behavioral_gate_threshold: float = 0.70

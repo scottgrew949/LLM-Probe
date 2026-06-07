@@ -47,8 +47,14 @@ Returns a dict:
       "token_position": int,
       "activations": list[list[float]],  # shape: [n_pairs, hidden_dim]
       "labels": list[str],               # theoretical label per item
-      "pair_ids": list[str],             # for traceability
+      "pair_ids": list[str],             # per-sentence id, "_a"/"_b" suffixed — traceability
+      "pair_group_ids": list[str],       # base pair_id, SHARED by both sentences of a pair
     }
+
+pair_group_ids is the leakage-safe grouping key (S4): both sentences of a minimal
+pair carry the same base id, so passing it to run_linear_probe(pair_ids=...) keeps
+them on the same side of every cross-validation fold. pair_ids stays suffixed so a
+single row remains individually traceable.
 
 One dict per (layer, component, token_position) combination.
 """
@@ -125,6 +131,7 @@ def extract_activations(config: Any, model: Any) -> list[dict[str, Any]]:
             captured_activations: list[list[float]] = []
             captured_labels: list[str] = []
             captured_pair_ids: list[str] = []
+            captured_pair_group_ids: list[str] = []
 
             for stimulus_pair in stimulus_pairs:
                 for sentence_key, label_key, id_suffix in [
@@ -156,6 +163,7 @@ def extract_activations(config: Any, model: Any) -> list[dict[str, Any]]:
                     captured_activations.append(captured_activation["vector"].tolist())
                     captured_labels.append(label)
                     captured_pair_ids.append(f"{pair_id}{id_suffix}")
+                    captured_pair_group_ids.append(pair_id)
 
             layer_activation_sets.append({
                 "model_id": config.model_id,
@@ -165,6 +173,7 @@ def extract_activations(config: Any, model: Any) -> list[dict[str, Any]]:
                 "activations": captured_activations,
                 "labels": captured_labels,
                 "pair_ids": captured_pair_ids,
+                "pair_group_ids": captured_pair_group_ids,
             })
 
     return layer_activation_sets

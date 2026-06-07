@@ -34,7 +34,7 @@ THREAD_ID = args.thread
 N_PAIRS_BY_THREAD: dict[str, int] = {
     "t1a": 300,
     "t1b": 300,
-    "t1c": 300,
+    "t1c": 200,
     "t2":  630,
     "t2b": 30,
     "t3":  300,
@@ -119,14 +119,19 @@ except ValueError as validation_error:
     sys.exit(1)
 
 n_rejected = len(generated_pairs) - len(validated_pairs)
-label_counts: dict[str, int] = {}
+
+# Count individual sentence labels (both sentence_a and sentence_b).
+# Pair-level label_a counts alone omit conditions that appear only as label_b.
+sentence_label_counts: dict[str, int] = {}
 for pair in validated_pairs:
-    label = pair.get("label_a", "unknown")
-    label_counts[label] = label_counts.get(label, 0) + 1
+    for label_key in ("label_a", "label_b"):
+        label = pair.get(label_key, "unknown")
+        sentence_label_counts[label] = sentence_label_counts.get(label, 0) + 1
 
 print("  Passed:   " + str(len(validated_pairs)) + " pairs")
 print("  Rejected: " + str(n_rejected) + " pairs")
-for label, count in sorted(label_counts.items()):
+print("  Individual sentence counts by label:")
+for label, count in sorted(sentence_label_counts.items()):
     print("    " + label + ": " + str(count))
 print("  Written to: " + str(VALIDATED_PATH))
 print()

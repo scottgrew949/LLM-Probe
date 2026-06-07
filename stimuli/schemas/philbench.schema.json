@@ -18,7 +18,8 @@
     "behavioral_accuracy",
     "behavioral_gate_passed",
     "probe_peak_layer",
-    "probe_accuracy"
+    "probe_accuracy",
+    "surface_null_accuracy"
   ],
   "additionalProperties": false,
   "properties": {

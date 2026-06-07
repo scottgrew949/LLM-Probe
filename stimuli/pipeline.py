@@ -101,9 +101,18 @@ def generate_pairs(grammar_file: str | Path, n: int, thread_id: str) -> list[Sti
         with grammar_path.open("r") as grammar_file_handle:
             grammar_definition = json.load(grammar_file_handle)
         # JSON grammars: {"templates": [{"sentence_a": "...", "sentence_b": "..."}]}
-        # Repeat/truncate to n
+        # Return at most n DISTINCT templates. Never repeat templates to pad up to
+        # n: duplicate pairs would re-introduce train/test leakage and inflate the
+        # apparent stimulus count. If the grammar defines fewer than n, that is the
+        # honest ceiling — log it rather than fabricate copies.
         raw_templates = grammar_definition["templates"]
-        generated_pairs = (raw_templates * ((n // len(raw_templates)) + 1))[:n]
+        generated_pairs = raw_templates[:n]
+        if len(raw_templates) < n:
+            logging.getLogger(__name__).warning(
+                "Grammar %s defines only %d templates but %d were requested; "
+                "returning %d distinct pairs (no duplicates fabricated).",
+                grammar_path.name, len(raw_templates), n, len(raw_templates),
+            )
     else:
         raise ValueError(f"Unsupported grammar file type: {grammar_path.suffix}. Expected .py or .json.")
 
@@ -125,8 +134,11 @@ def validate_set(pairs: list[StimulusPair], thread_id: str) -> list[StimulusPair
     that pass both schema validation and frequency matching are written to
     validated/. The returned list is the validated subset.
 
-    Sets frequency_match_verified = True on each passing pair. [INVARIANT V5]
-    This is the ONLY place that field is set — never set it manually elsewhere.
+    Sets the per-pair frequency_matched = True flag on each passing pair (the
+    schema-backed record that this pair cleared frequency matching). [INVARIANT V5]
+    The config-level ExperimentConfig.frequency_match_verified is a separate flag,
+    derived from the written file by verify_stimulus_file_frequency_matched() — do
+    not set that one by hand.
 
     Args:
         pairs:     List of raw StimulusPair dicts from generate_pairs().
@@ -178,7 +190,8 @@ def validate_set(pairs: list[StimulusPair], thread_id: str) -> list[StimulusPair
             })
             continue
 
-        # [INVARIANT V7] Only validate_set sets this — never set it anywhere else
+        # [INVARIANT V5] Per-pair record that this pair cleared frequency matching.
+        # The config-level flag is derived later by verify_stimulus_file_frequency_matched.
         pair["frequency_matched"] = True
         validated_pairs.append(pair)
 
@@ -233,6 +246,37 @@ def check_frequency_match(pair: StimulusPair) -> bool:
         return True  # no content words — pass through
 
     return abs(freq_a - freq_b) <= 1.0
+
+
+def verify_stimulus_file_frequency_matched(stimulus_file: str | Path) -> bool:
+    """
+    [INVARIANT V7] Single source of truth for ExperimentConfig.frequency_match_verified.
+
+    Loads a stimulus file and confirms every pair passes check_frequency_match.
+    Runners call this to *derive* the config flag from the file on disk instead
+    of asserting frequency_match_verified=True by hand — so the V7 phase gate
+    actually reflects the stimuli, and a hand-edited or regenerated validated
+    file with an unmatched pair is caught before extraction rather than trusted.
+
+    Args:
+        stimulus_file: Path to a JSONL stimulus file (one pair per line), normally
+                       stimuli/validated/{thread_id}/pairs.validated.jsonl.
+
+    Returns:
+        True if the file is non-empty and every pair is frequency-matched.
+        False if the file is empty or any pair fails check_frequency_match.
+    """
+    stimulus_file_path = Path(stimulus_file)
+    saw_any_pair = False
+    with stimulus_file_path.open("r") as stimulus_file_handle:
+        for raw_line in stimulus_file_handle:
+            stripped_line = raw_line.strip()
+            if not stripped_line:
+                continue
+            saw_any_pair = True
+            if not check_frequency_match(json.loads(stripped_line)):
+                return False
+    return saw_any_pair
 
 
 # ── Behavioral gate ───────────────────────────────────────────────────────────
@@ -375,9 +419,17 @@ def build_philbench_entry(
           - probe_result or patch_result summary
           - theoretical_distinction, expected_outcome fields
 
+    Raises:
+        ValueError: if pair or result is missing a required field. The released
+                    benchmark must never carry placeholder 0.0/False/empty values
+                    in place of real measurements, so missing inputs fail loudly
+                    here rather than being silently defaulted.
+        jsonschema.ValidationError: if the assembled entry violates the schema.
+
     Note:
         Validated against philbench.schema.json before being written to
-        stimuli/philbench/philbench.jsonl.
+        stimuli/philbench/philbench.jsonl. patch_* and rsa_* are legitimately
+        absent for threads that do not run those analyses and stay null.
     """
     import jsonschema
 
@@ -387,29 +439,52 @@ def build_philbench_entry(
     with philbench_schema_path.open("r") as schema_file_handle:
         philbench_schema = json.load(schema_file_handle)
 
-    pair_id = pair.get("pair_id", "")
+    # Fields that must reflect real measurements — never silently defaulted.
+    required_result_fields = (
+        "behavioral_accuracy", "behavioral_gate_passed",
+        "probe_peak_layer", "probe_accuracy", "surface_null_accuracy",
+    )
+    missing_result_fields = [field for field in required_result_fields if field not in result]
+    if missing_result_fields:
+        raise ValueError(
+            f"build_philbench_entry: result is missing required fields {missing_result_fields}. "
+            f"Refusing to write a benchmark entry with placeholder values — populate these "
+            f"from the real experiment result first."
+        )
+
+    required_pair_fields = (
+        "pair_id", "theoretical_distinction", "sentence_a", "sentence_b", "label_a", "label_b",
+    )
+    missing_pair_fields = [field for field in required_pair_fields if not pair.get(field)]
+    if missing_pair_fields:
+        raise ValueError(
+            f"build_philbench_entry: pair is missing required fields {missing_pair_fields}."
+        )
+
+    pair_id = pair["pair_id"]
     thread_id = config.thread_id
 
     philbench_entry = {
         "philbench_id": f"pb_{thread_id}_{pair_id}",
         "pair_id": pair_id,
         "thread_id": thread_id,
-        "theoretical_distinction": pair.get("theoretical_distinction", ""),
-        "sentence_a": pair.get("sentence_a", ""),
-        "sentence_b": pair.get("sentence_b", ""),
-        "label_a": pair.get("label_a", ""),
-        "label_b": pair.get("label_b", ""),
+        "theoretical_distinction": pair["theoretical_distinction"],
+        "sentence_a": pair["sentence_a"],
+        "sentence_b": pair["sentence_b"],
+        "label_a": pair["label_a"],
+        "label_b": pair["label_b"],
         "model_id": config.model_id,
         "model_revision": config.model_revision,
-        "behavioral_accuracy": result.get("behavioral_accuracy", 0.0),
-        "behavioral_gate_passed": result.get("behavioral_gate_passed", False),
-        "probe_peak_layer": result.get("probe_peak_layer", 0),
-        "probe_accuracy": result.get("probe_accuracy", 0.0),
-        "patch_peak_layer": result.get("patch_peak_layer", None),
-        "patch_effect_size": result.get("patch_effect_size", None),
-        "rsa_spearman_r": result.get("rsa_spearman_r", None),
-        "rsa_p_value": result.get("rsa_p_value", None),
-        "surface_null_accuracy": result.get("surface_null_accuracy", 0.0),
+        "behavioral_accuracy": result["behavioral_accuracy"],
+        "behavioral_gate_passed": result["behavioral_gate_passed"],
+        "probe_peak_layer": result["probe_peak_layer"],
+        "probe_accuracy": result["probe_accuracy"],
+        # Nullable by schema — absent for threads that do not run these analyses.
+        "patch_peak_layer": result.get("patch_peak_layer"),
+        "patch_effect_size": result.get("patch_effect_size"),
+        "rsa_spearman_r": result.get("rsa_spearman_r"),
+        "rsa_p_value": result.get("rsa_p_value"),
+        "surface_null_accuracy": result["surface_null_accuracy"],
         "experiment_id": config.experiment_id,
     }
 

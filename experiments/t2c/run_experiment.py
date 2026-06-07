@@ -61,6 +61,7 @@ if not t2b_summary_path.exists():
 from extraction.extractor import compute_sha256, extract_activations
 from experiments.config import ExperimentConfig
 from experiments.run import run_surface_null, check_phase_gate
+from stimuli.pipeline import verify_stimulus_file_frequency_matched
 from probes.probes import run_linear_probe
 from interventions.interventions import run_layer_sweep, assert_specificity_valid, mean_ablate
 from core.io import load_result, save_result
@@ -113,7 +114,7 @@ config = ExperimentConfig(
     probe_type="linear",
     stimulus_file=str(VALIDATED_PATH),
     stimulus_sha256=compute_sha256(VALIDATED_PATH),
-    frequency_match_verified=True,
+    frequency_match_verified=verify_stimulus_file_frequency_matched(VALIDATED_PATH),
     expected_outcomes=expected_outcomes_by_intension_type[args.intension_type],
     prerequisite_experiment_id=T2B_PREREQUISITE_ID,
     intension_type=args.intension_type,
@@ -145,7 +146,10 @@ for activation_set in layer_activation_sets:
     layer_index = activation_set["layer"]
     layer_activations = np.array(activation_set["activations"])
     layer_labels = activation_set["labels"]
-    probe_result = run_linear_probe(layer_activations, layer_labels, config)
+    # pair_group_ids keeps both sentences of a minimal pair in one fold (S4).
+    probe_result = run_linear_probe(
+        layer_activations, layer_labels, config, pair_ids=activation_set["pair_group_ids"]
+    )
     probe_result["layer"] = layer_index
     save_result(probe_result, RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json"))
     probe_results_by_layer[layer_index] = probe_result

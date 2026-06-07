@@ -55,11 +55,122 @@ from __future__ import annotations
 from typing import Any
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_val_score, LeaveOneOut
+from sklearn.model_selection import (
+    StratifiedKFold,
+    StratifiedGroupKFold,
+    GroupKFold,
+    cross_val_score,
+)
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import LabelEncoder
 from scipy.stats import spearmanr
+
+
+# ── T1d identifiability split (single source of truth) ───────────────────────
+# Pearl identifiability collapses the four T1d conditions into two classes. Both
+# the L2 identification probe (run_identification_probe) and the L3 layer sweep
+# in experiments/t1d/run_experiment.py import these so they test the *same*
+# contrast — identified vs not-identifiable — rather than drifting apart.
+#
+# unconfounded_control is *identified*: plain X -> Y with no confounding, so
+# P(Y | do(X)) = P(Y | X), trivially recovered with the empty adjustment set.
+# confounded_not_adjustable is the only genuinely not-identifiable condition.
+IDENTIFIED_T1D_LABELS: frozenset[str] = frozenset({
+    "back_door_adjustable",
+    "front_door_adjustable",
+    "unconfounded_control",
+})
+NOT_IDENTIFIABLE_T1D_LABELS: frozenset[str] = frozenset({
+    "confounded_not_adjustable",
+})
+
+
+# ── Shared cross-validation ─────────────────────────────────────────────────
+
+def _adaptive_grouped_cv_accuracy(
+    estimator: Any,
+    features: np.ndarray,
+    encoded_labels: np.ndarray,
+    seed: int,
+    groups: list[str] | np.ndarray | None = None,
+) -> dict[str, Any]:
+    """
+    Leakage-safe, adaptive cross-validated accuracy. Single source of fold logic
+    for every probe in this project — run_linear_probe (L2) and run_surface_null
+    (the surface baseline) both call it so they cannot drift apart.
+
+    ─── Minimal-pair leakage (S4) ───────────────────────────────────────────────
+    When groups is given, every row sharing a group id (the two sentences of a
+    minimal pair) is forced onto the same side of every fold. Without this, the
+    near-collinear sentence_a / sentence_b of a pair can split across train and
+    test, letting the probe "predict" an item it has effectively memorised and
+    inflating accuracy. StratifiedGroupKFold keeps class balance across folds
+    while respecting groups; if its constraints cannot be met (a class confined
+    to too few groups) we fall back to plain GroupKFold — grouping is the
+    correctness-critical constraint, so stratification is the part we drop.
+
+    ─── Adaptive fold count (L1) ────────────────────────────────────────────────
+    n_splits adapts to the rarest stratum as min(5, limiting_count). In the
+    grouped path the binding constraint is the number of distinct groups per
+    class, not rows, because a whole group moves into a single fold. If fewer
+    than two folds can be formed, cross-validation is undefined, so scores is
+    returned as None and the caller reports accuracy as NaN rather than a
+    misleading single-fold number.
+
+    Args:
+        estimator:      Any sklearn classifier (cloned per fold by cross_val_score).
+        features:       np.ndarray (n_items, n_features).
+        encoded_labels: np.ndarray (n_items,) of integer-encoded labels.
+        seed:           Random seed for the ungrouped shuffle (grouped splitters
+                        are deterministic and ignore it).
+        groups:         Optional group id per row. When provided, splits are
+                        grouped; when None, plain StratifiedKFold is used.
+
+    Returns:
+        Dict with:
+          "scores":   np.ndarray | None — per-fold accuracy, None if CV skipped
+          "n_splits": int               — folds actually run (0 if skipped)
+          "grouped":  bool              — whether grouped splitting was used
+          "note":     str | None        — explanation, present only when skipped
+    """
+    grouped = groups is not None
+
+    if grouped:
+        groups = np.asarray(groups)
+        limiting_count = min(
+            len(np.unique(groups[encoded_labels == class_index]))
+            for class_index in np.unique(encoded_labels)
+        )
+    else:
+        limiting_count = int(np.bincount(encoded_labels).min())
+
+    n_splits = min(5, limiting_count)
+
+    if n_splits < 2:
+        note = (
+            "Cross-validation skipped: smallest "
+            + ("class-group" if grouped else "class")
+            + f" count is {limiting_count} (< 2 folds possible). accuracy_mean is NaN."
+        )
+        return {"scores": None, "n_splits": 0, "grouped": grouped, "note": note}
+
+    if grouped:
+        try:
+            cross_val_splitter = StratifiedGroupKFold(n_splits=n_splits)
+            cross_val_scores = cross_val_score(
+                estimator, features, encoded_labels, cv=cross_val_splitter, groups=groups
+            )
+        except ValueError:
+            cross_val_splitter = GroupKFold(n_splits=n_splits)
+            cross_val_scores = cross_val_score(
+                estimator, features, encoded_labels, cv=cross_val_splitter, groups=groups
+            )
+    else:
+        cross_val_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        cross_val_scores = cross_val_score(estimator, features, encoded_labels, cv=cross_val_splitter)
+
+    return {"scores": cross_val_scores, "n_splits": n_splits, "grouped": grouped, "note": None}
 
 
 # ── Linear probe ──────────────────────────────────────────────────────────────
@@ -68,43 +179,88 @@ def run_linear_probe(
     activations: np.ndarray,
     labels: list[str],
     config: Any,
+    pair_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Train a logistic regression probe on activations and return accuracy + weights.
 
-    Uses stratified k-fold cross-validation (k=5) to get an unbiased accuracy
-    estimate. The probe weights (one weight vector per class) are returned in
-    the result — they can be analyzed geometrically to understand what direction
-    in activation space encodes the distinction.
+    Uses k-fold cross-validation to get an unbiased accuracy estimate. The probe
+    weights (one weight vector per class) are returned in the result — they can
+    be analyzed geometrically to understand what direction in activation space
+    encodes the distinction.
+
+    ─── Leakage across minimal pairs (S4) ──────────────────────────────────────
+    Stimuli are minimal pairs: two near-identical sentences differing in one
+    spot, linked by a shared pair_id (the extractor emits them interleaved, so
+    sentence_a and sentence_b of a pair sit on adjacent rows). Their activation
+    vectors are therefore almost collinear. A plain StratifiedKFold(shuffle=True)
+    on individual rows can put sentence_a in the train fold and sentence_b in the
+    test fold; the probe then "predicts" a held-out item it has effectively
+    already memorised, inflating accuracy. To prevent this, when pair_ids is
+    given we split by pair_id *group* so both members of a pair always land on
+    the same side of every fold. StratifiedGroupKFold keeps class balance across
+    folds while respecting groups; if its constraints cannot be met (e.g. a class
+    confined to too few groups) we fall back to plain GroupKFold.
+
+    When pair_ids is None we keep the legacy StratifiedKFold behaviour so existing
+    callers (e.g. run.py) that do not yet thread pair_ids through keep working.
+
+    ─── Adaptive fold count (L1) ────────────────────────────────────────────────
+    k=5 is hardcoded nowhere: n_splits adapts to the rarest class (or rarest
+    group, for the grouped path) as min(5, smallest_count). If even two folds
+    cannot be formed (smallest_count < 2) cross-validation is impossible, so we
+    skip it and report accuracy_mean as NaN with an explanatory "note" field.
+    n_folds always reflects what actually ran.
 
     Args:
         activations: np.ndarray of shape (n_items, hidden_dim). Each row is the
                      activation vector for one stimulus at one layer.
         labels:      List of string labels, length n_items. E.g. ["opaque", "transparent", ...]
         config:      ExperimentConfig. Used for experiment_id, thread_id, layer metadata.
+        pair_ids:    Optional list of minimal-pair identifiers, length n_items.
+                     When provided, cross-val splits are grouped by pair_id to
+                     prevent train/test leakage between the two sentences of a
+                     pair. When None, falls back to ungrouped StratifiedKFold.
 
     Returns:
         Dict with:
           "experiment_id": str
           "thread_id": str
-          "accuracy_mean": float        — mean cross-val accuracy
-          "accuracy_std": float         — std across folds
+          "accuracy_mean": float        — mean cross-val accuracy (NaN if cross-val skipped)
+          "accuracy_std": float         — std across folds (NaN if cross-val skipped)
           "chance_baseline": float      — largest class fraction (null model)
           "weights": list[list[float]]  — probe weight vectors, shape [n_classes, hidden_dim]
           "labels_order": list[str]     — which class corresponds to which weight row
           "n_items": int
-          "n_folds": int
+          "n_folds": int                — folds actually run (0 if cross-val skipped)
+          "grouped_by_pair_id": bool    — whether the leakage-safe grouped split was used
+          "note": str                   — present only when cross-val was skipped
 
     Note:
         Use sklearn.linear_model.LogisticRegression with max_iter=1000, C=1.0.
-        Use sklearn.model_selection.StratifiedKFold for cross-validation.
     """
     label_encoder = LabelEncoder()
     encoded_labels = label_encoder.fit_transform(labels)
 
     probe = LogisticRegression(max_iter=1000, C=1.0, random_state=config.seed)
-    cross_val_splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=config.seed)
-    cross_val_scores = cross_val_score(probe, activations, encoded_labels, cv=cross_val_splitter)
+
+    # Leakage-safe, adaptive cross-validation. pair_ids is the group key: both
+    # sentences of a minimal pair share one id and so stay on the same side of
+    # every fold. None → ungrouped legacy behaviour. See _adaptive_grouped_cv_accuracy.
+    cross_validation = _adaptive_grouped_cv_accuracy(
+        probe, activations, encoded_labels, config.seed, groups=pair_ids
+    )
+    grouped_by_pair_id = cross_validation["grouped"]
+    skipped_note = cross_validation["note"]
+
+    if cross_validation["scores"] is None:
+        accuracy_mean = float("nan")
+        accuracy_std = float("nan")
+        n_folds_run = 0
+    else:
+        accuracy_mean = float(cross_validation["scores"].mean())
+        accuracy_std = float(cross_validation["scores"].std())
+        n_folds_run = cross_validation["n_splits"]
 
     # Fit once more on the full dataset to extract probe weights.
     # The accuracy above came from cross-val (held-out folds) — these weights
@@ -115,17 +271,21 @@ def run_linear_probe(
     unique_label_counts = np.bincount(encoded_labels)
     chance_baseline = unique_label_counts.max() / len(encoded_labels)
 
-    return {
+    result: dict[str, Any] = {
         "experiment_id": config.experiment_id,
         "thread_id": config.thread_id,
-        "accuracy_mean": float(cross_val_scores.mean()),
-        "accuracy_std": float(cross_val_scores.std()),
+        "accuracy_mean": accuracy_mean,
+        "accuracy_std": accuracy_std,
         "chance_baseline": float(chance_baseline),
         "weights": probe.coef_.tolist(),
         "labels_order": label_encoder.classes_.tolist(),
         "n_items": len(labels),
-        "n_folds": 5,
+        "n_folds": n_folds_run,
+        "grouped_by_pair_id": grouped_by_pair_id,
     }
+    if skipped_note is not None:
+        result["note"] = skipped_note
+    return result
 
 
 # ── RSA ───────────────────────────────────────────────────────────────────────
@@ -257,6 +417,12 @@ def run_mantel_test(
         "significant": empirical_p_value < 0.05,
         "null_95th_percentile": null_95th_percentile,
         "exceeds_null_floor": observed_r > null_95th_percentile,
+        "note": (
+            "'significant' (p < 0.05) and 'exceeds_null_floor' (r > 95th pct of "
+            "the null) are two restatements of the SAME permutation test, not two "
+            "independent pieces of evidence — both read off the one null "
+            "distribution computed here. Do not count them as corroborating each other."
+        ),
     }
 
 
@@ -267,16 +433,25 @@ def run_knife_mi(
     labels: list[str],
 ) -> dict[str, Any]:
     """
-    Estimate mutual information between activations and labels using KNIFE.
+    Variational LOWER BOUND on the mutual information I(X; Y) between continuous
+    activations X and discrete labels Y. This is NOT the KNIFE estimator.
 
-    KNIFE (from Pimentel et al. 2020) estimates I(X; Y) between continuous
-    activations X and discrete labels Y using a variational bound and learned
-    encoder. Unlike linear probes, MI is invariant to invertible transformations —
-    it captures *all* information, not just linearly decodable information.
+    ─── What this actually computes ─────────────────────────────────────────────
+    For any classifier q(Y | X), the Barber–Agakov bound gives
+        I(X; Y) = H(Y) - H(Y | X) >= H(Y) - E[ -log q(Y | X) ].
+    We take q to be a k-NN classifier and estimate the expected held-out negative
+    log-likelihood (cross-entropy) with cross-validated predict_proba, so the
+    classifier never scores a point it trained on. mi_nats = max(0, H(Y) - CE) is
+    therefore a defensible lower bound: a high value is real evidence the label is
+    decodable from the activation, a low value only means *this* classifier could
+    not decode it — the true MI may be higher. Unlike a linear probe this does not
+    assume linear separability, but it is bounded by the kNN's expressiveness, so
+    it is a lower bound, not the full information.
 
-    Comparing run_linear_probe accuracy and run_knife_mi gives insight into
-    whether information is stored linearly vs. non-linearly. If probe accuracy
-    is low but MI is high, the distinction is encoded non-linearly.
+    The earlier implementation reported an ad-hoc entropy decomposition of LOO
+    accuracy as if it were MI; that number had no estimator-theoretic meaning and
+    was removed. For the true KNIFE estimator (Pimentel et al. 2020) install the
+    `knife` package and swap it in here.
 
     Args:
         activations: np.ndarray of shape (n_items, hidden_dim).
@@ -284,58 +459,70 @@ def run_knife_mi(
 
     Returns:
         Dict with:
-          "mi_nats": float     — estimated mutual information in nats
+          "mi_nats": float     — MI lower bound in nats (NaN if too few items to CV)
           "mi_bits": float     — same in bits (mi_nats / log(2))
           "n_items": int
           "n_classes": int
-
-    Note:
-        Requires the `knife` package or a local implementation.
-        See Pimentel et al. 2020 "A Pareto-Optimal Compositional Language Emerges
-        with Hobson's Choice" for the estimator.
-        If knife is not installed, raise ImportError with installation instructions.
+          "n_folds": int       — CV folds used (0 if estimation was skipped)
+          "estimator": str     — "knn-cv-variational-lower-bound"
+          "note": str          — states this is a lower bound, not KNIFE
     """
-    # The full KNIFE estimator (Pimentel et al. 2020) requires installing the
-    # `knife` package. Until that's available, we use a k-NN leave-one-out proxy:
-    # estimate MI from LOO accuracy via an entropy decomposition.
-    # This is an approximation — it will not match the paper's numbers.
-    # To use the real estimator, install knife and replace this block.
+    from sklearn.model_selection import cross_val_predict
+
     label_encoder = LabelEncoder()
     encoded_labels = label_encoder.fit_transform(labels)
     n_classes = len(label_encoder.classes_)
+    n_items = len(labels)
 
-    knn_classifier = KNeighborsClassifier(n_neighbors=5)
-    loo_splitter = LeaveOneOut()
-    correct_predictions = 0
-    for train_indices, test_index in loo_splitter.split(activations):
-        knn_classifier.fit(activations[train_indices], encoded_labels[train_indices])
-        predicted_label = knn_classifier.predict(activations[test_index])[0]
-        if predicted_label == encoded_labels[test_index][0]:
-            correct_predictions += 1
-    loo_accuracy = correct_predictions / len(labels)
+    label_probs = np.bincount(encoded_labels) / n_items
+    label_entropy_nats = float(-np.sum(label_probs * np.log(label_probs + 1e-10)))
 
-    # MI proxy: H(Y) - H(Y|X_hat), where H(Y) is label entropy
-    # and H(Y|X_hat) is estimated from LOO accuracy
-    label_probs = np.bincount(encoded_labels) / len(encoded_labels)
-    label_entropy_nats = -np.sum(label_probs * np.log(label_probs + 1e-10))
+    # Held-out cross-entropy needs at least two folds, and a fold per class member.
+    smallest_class_count = int(np.bincount(encoded_labels).min())
+    n_splits = min(5, smallest_class_count)
 
-    # Approximate conditional entropy from aggregate accuracy (rough bound)
-    error_rate = 1.0 - loo_accuracy
-    error_spread = error_rate / max(n_classes - 1, 1)  # distribute errors evenly over wrong classes
-    conditional_entropy_nats = -(
-        loo_accuracy * np.log(loo_accuracy + 1e-10)
-        + error_rate * np.log(error_spread + 1e-10)
+    lower_bound_note = (
+        "Variational LOWER bound on I(X;Y) via held-out k-NN cross-entropy "
+        "(Barber-Agakov), NOT the KNIFE estimator. A low value means this "
+        "classifier could not decode the label, not that the information is absent."
     )
-    mi_nats = max(0.0, label_entropy_nats - conditional_entropy_nats)
+
+    if n_splits < 2:
+        return {
+            "mi_nats": float("nan"),
+            "mi_bits": float("nan"),
+            "n_items": n_items,
+            "n_classes": int(n_classes),
+            "n_folds": 0,
+            "estimator": "knn-cv-variational-lower-bound",
+            "note": (
+                lower_bound_note
+                + f" Skipped: smallest class count is {smallest_class_count} (< 2 folds)."
+            ),
+        }
+
+    n_neighbors = min(5, smallest_class_count)
+    knn_classifier = KNeighborsClassifier(n_neighbors=n_neighbors)
+    cross_validation_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    held_out_class_probabilities = cross_val_predict(
+        knn_classifier, activations, encoded_labels,
+        cv=cross_validation_splitter, method="predict_proba",
+    )
+    probability_of_true_class = held_out_class_probabilities[np.arange(n_items), encoded_labels]
+    cross_entropy_nats = float(-np.mean(np.log(probability_of_true_class + 1e-10)))
+
+    mi_nats = max(0.0, label_entropy_nats - cross_entropy_nats)
     mi_bits = mi_nats / np.log(2)
 
     return {
         "mi_nats": float(mi_nats),
         "mi_bits": float(mi_bits),
-        "n_items": len(labels),
+        "n_items": n_items,
         "n_classes": int(n_classes),
-        "estimator": "knn-loo-proxy",
-        "note": "Approximate — install knife package for Pimentel et al. 2020 estimator",
+        "n_folds": n_splits,
+        "estimator": "knn-cv-variational-lower-bound",
+        "note": lower_bound_note,
     }
 
 
@@ -343,19 +530,38 @@ def run_identification_probe(
     activations: np.ndarray,
     labels: list[str],
     config: Any,
+    pair_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """
-    Binary linear probe separating adjustable from not-adjustable causal structures.
+    Binary linear probe separating *identified* from *not-identifiable* causal effects.
 
-    Used by T1d to test whether model representations distinguish confounded
-    structures with a valid adjustment set from those without one. Collapses
-    the four T1d conditions into two groups:
-      adjustable:     back_door_adjustable | front_door_adjustable
-      not_adjustable: confounded_not_adjustable | unconfounded_control
+    Used by T1d to test whether model representations distinguish causal effects
+    whose magnitude can be recovered from observational data from those that
+    cannot. The discriminating concept is Pearl's identifiability, not the mere
+    presence of an adjustment formula. Collapses the four T1d conditions into two
+    groups:
+      identified (adjustable): back_door_adjustable | front_door_adjustable |
+                               unconfounded_control
+      not identifiable:        confounded_not_adjustable
+
+    Why unconfounded_control is *identified*, not not_adjustable: it is plain
+    direct causation X -> Y with no confounding. The interventional distribution
+    P(Y | do(X)) simply equals the observational P(Y | X) — the effect is
+    *trivially* identified (the empty set is a valid adjustment set). It is the
+    easiest case of identification, so it belongs with the identified class. The
+    only genuinely not-identifiable condition is confounded_not_adjustable, where
+    a hidden confounder leaves no valid adjustment set and P(Y | do(X)) cannot be
+    recovered from observation at all.
 
     The two-class grouping is fixed here — callers do not specify it. This
-    enforces that the identification criterion is always tested as a binary
-    distinction, not a four-way one.
+    enforces that identifiability is always tested as a binary distinction, not a
+    four-way one.
+
+    Caller note — class balance: this grouping is imbalanced, 3 conditions vs 1
+    (identified vs not-identifiable). Chance baseline is therefore not 0.5, and
+    callers should ensure roughly balanced sampling between the two collapsed
+    classes (e.g. oversample confounded_not_adjustable) before reading
+    accuracy_mean as evidence of separation. Sampling is not adjusted here.
 
     Args:
         activations: np.ndarray of shape (n_items, hidden_dim).
@@ -363,6 +569,9 @@ def run_identification_probe(
             "back_door_adjustable" | "front_door_adjustable" |
             "confounded_not_adjustable" | "unconfounded_control"
         config: ExperimentConfig. thread_id should be "t1d".
+        pair_ids: Optional minimal-pair identifiers, length n_items, passed
+                  through to run_linear_probe to group cross-val folds and
+                  prevent train/test leakage between paired sentences.
 
     Returns:
         All fields from run_linear_probe, plus:
@@ -370,14 +579,16 @@ def run_identification_probe(
           "adjustable_class": "adjustable"
           "not_adjustable_class": "not_adjustable"
     """
-    adjustable_label_set = {"back_door_adjustable", "front_door_adjustable"}
-
+    # Identified effects: a valid adjustment set exists. For the two adjustable
+    # conditions this is the back-door / front-door set; for unconfounded_control
+    # it is the empty set (direct causation needs no adjustment at all). The set
+    # lives at module scope so the L3 sweep patches the same contrast (V6 audit).
     binary_labels = [
-        "adjustable" if label in adjustable_label_set else "not_adjustable"
+        "adjustable" if label in IDENTIFIED_T1D_LABELS else "not_adjustable"
         for label in labels
     ]
 
-    probe_result = run_linear_probe(activations, binary_labels, config)
+    probe_result = run_linear_probe(activations, binary_labels, config, pair_ids=pair_ids)
     probe_result["probe_type"] = "identification_binary"
     probe_result["adjustable_class"] = "adjustable"
     probe_result["not_adjustable_class"] = "not_adjustable"

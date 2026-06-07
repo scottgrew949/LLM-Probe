@@ -62,6 +62,7 @@ if not VALIDATED_PATH.exists():
 from extraction.extractor import compute_sha256
 from experiments.config import ExperimentConfig
 from experiments.run import run_surface_null, run_experiment
+from stimuli.pipeline import verify_stimulus_file_frequency_matched
 from core.io import load_result, save_result
 
 
@@ -126,7 +127,7 @@ config = ExperimentConfig(
     probe_type="linear",
     stimulus_file=str(VALIDATED_PATH),
     stimulus_sha256=compute_sha256(VALIDATED_PATH),
-    frequency_match_verified=True,
+    frequency_match_verified=verify_stimulus_file_frequency_matched(VALIDATED_PATH),
     expected_outcomes=expected_outcomes,
 )
 
@@ -237,17 +238,17 @@ print("  Layer   Accuracy    Std    Chance")
 print("  -----   --------   -----   ------")
 
 for layer_index in range(GPT2_MEDIUM_N_LAYERS):
-    probe_file = RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json")
-    probe_data = load_result(probe_file)
-    accuracy   = probe_data["accuracy_mean"]
-    std        = probe_data["accuracy_std"]
-    chance     = probe_data["chance_baseline"]
+    probe_result_path           = RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json")
+    probe_data                  = load_result(probe_result_path)
+    probe_layer_accuracy        = probe_data["accuracy_mean"]
+    probe_layer_std             = probe_data["accuracy_std"]
+    probe_layer_chance_baseline = probe_data["chance_baseline"]
     peak_marker = "  <-- PEAK (L2)" if layer_index == peak_probe_layer else ""
     print(
         "  " + str(layer_index).rjust(5) +
-        "   " + str(round(accuracy * 100, 1)).rjust(6) + "%" +
-        "   " + str(round(std * 100, 1)).rjust(4) + "%" +
-        "   " + str(round(chance * 100, 1)).rjust(5) + "%" +
+        "   " + str(round(probe_layer_accuracy * 100, 1)).rjust(6) + "%" +
+        "   " + str(round(probe_layer_std * 100, 1)).rjust(4) + "%" +
+        "   " + str(round(probe_layer_chance_baseline * 100, 1)).rjust(5) + "%" +
         peak_marker
     )
 

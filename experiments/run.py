@@ -104,9 +104,9 @@ def run_surface_null(config: ExperimentConfig) -> dict[str, Any]:
         Writes surface_null.json to experiments/{config.thread_id}/results/.
     """
     from sklearn.linear_model import LogisticRegression
-    from sklearn.model_selection import StratifiedKFold, cross_val_score
     from sklearn.preprocessing import LabelEncoder
     from core.text_utils import mean_log10_frequency
+    from probes.probes import _adaptive_grouped_cv_accuracy
 
     stimulus_file_path = Path(config.stimulus_file)
     stimulus_pairs = []
@@ -120,13 +120,17 @@ def run_surface_null(config: ExperimentConfig) -> dict[str, Any]:
     # Label = theoretical label of that sentence (e.g. "opaque", "transparent")
     surface_feature_rows = []
     sentence_labels = []
+    # Grouping key per row: both sentences of a pair share the base pair_id, so
+    # the surface classifier is held to the same leakage-safe folds as the L2
+    # probe (S4) — a pair's near-duplicate surface features cannot straddle folds.
+    surface_pair_group_ids = []
 
     # Pair-level summary statistics (not used as classifier features)
     freq_diffs = []
     length_diffs = []
     jaccard_overlaps = []
 
-    for stimulus_pair in stimulus_pairs:
+    for pair_index, stimulus_pair in enumerate(stimulus_pairs):
         sentence_a = stimulus_pair.get("sentence_a", "")
         sentence_b = stimulus_pair.get("sentence_b", "")
         label_a = stimulus_pair.get("label_a", "a")
@@ -143,6 +147,10 @@ def run_surface_null(config: ExperimentConfig) -> dict[str, Any]:
         surface_feature_rows.append([freq_b, len(tokens_b)])
         sentence_labels.append(label_b)
 
+        pair_group_id = stimulus_pair.get("pair_id", str(pair_index))
+        surface_pair_group_ids.append(pair_group_id)  # sentence_a row
+        surface_pair_group_ids.append(pair_group_id)  # sentence_b row
+
         freq_diffs.append(abs(freq_a - freq_b))
         length_diffs.append(abs(len(tokens_a) - len(tokens_b)))
 
@@ -156,24 +164,32 @@ def run_surface_null(config: ExperimentConfig) -> dict[str, Any]:
     encoded_labels = label_encoder.fit_transform(sentence_labels)
 
     surface_classifier = LogisticRegression(max_iter=1000, C=1.0, random_state=config.seed)
-    cross_val_splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=config.seed)
-    surface_cross_val_scores = cross_val_score(
-        surface_classifier, surface_feature_matrix, encoded_labels, cv=cross_val_splitter
+    surface_cross_validation = _adaptive_grouped_cv_accuracy(
+        surface_classifier, surface_feature_matrix, encoded_labels, config.seed,
+        groups=surface_pair_group_ids,
     )
+    if surface_cross_validation["scores"] is None:
+        surface_classifier_accuracy = float("nan")
+    else:
+        surface_classifier_accuracy = float(surface_cross_validation["scores"].mean())
 
     surface_null_result = {
-        "surface_classifier_accuracy": float(surface_cross_val_scores.mean()),
+        "surface_classifier_accuracy": surface_classifier_accuracy,
         "mean_freq_diff": float(np.mean(freq_diffs)),
         "mean_length_diff_tokens": float(np.mean(length_diffs)),
         "mean_vocab_overlap": float(np.mean(jaccard_overlaps)),
         "n_pairs": len(stimulus_pairs),
+        "n_folds": surface_cross_validation["n_splits"],
         "thread_id": config.thread_id,
         "experiment_id": config.experiment_id,
         "note": (
-            "surface_classifier_accuracy uses per-sentence features [log10_freq, length]. "
+            "surface_classifier_accuracy uses per-sentence features [log10_freq, length], "
+            "cross-validated with pair-grouped folds (same leakage-safe split as the L2 probe). "
             "mean_vocab_overlap (Jaccard) is a summary statistic only, not a classifier feature."
         ),
     }
+    if surface_cross_validation["note"] is not None:
+        surface_null_result["cv_note"] = surface_cross_validation["note"]
 
     # [INVARIANT V11] Write surface_null.json FIRST — before any other result
     results_directory = PROJECT_ROOT / "experiments" / config.thread_id / "results"
@@ -385,7 +401,10 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
         activations_array = np.array(activation_set["activations"])
         labels = activation_set["labels"]
 
-        probe_result = run_linear_probe(activations_array, labels, config)
+        # pair_group_ids groups both sentences of a minimal pair into one fold (S4).
+        probe_result = run_linear_probe(
+            activations_array, labels, config, pair_ids=activation_set["pair_group_ids"]
+        )
         probe_result["layer"] = layer_index
         probe_result["token_position"] = activation_set["token_position"]
 
