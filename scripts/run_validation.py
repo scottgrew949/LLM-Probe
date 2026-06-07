@@ -72,7 +72,7 @@ N_PAIRS_BY_THREAD: dict[str, int] = {
 if BASE_THREAD not in N_PAIRS_BY_THREAD:
     print("ERROR: Unknown thread '" + THREAD_ID + "'.")
     print("Known threads: " + ", ".join(sorted(N_PAIRS_BY_THREAD))
-          + " (optionally with a " + "/".join(MODEL_VARIANT_SUFFIXES) + " suffix)")
+          + " (optionally with a " + "/".join(sorted(s for s in MODEL_BY_SUFFIX if s)) + " suffix)")
     sys.exit(1)
 
 N_PAIRS = N_PAIRS_BY_THREAD[BASE_THREAD]

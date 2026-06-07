@@ -596,82 +596,6 @@ class TestCausalHierarchyGrammar:
             assert item["correct"] in ("a", "b")
 
 
-# ── stimuli/grammars/t1b.py ───────────────────────────────────────────────────
-
-from stimuli.grammars.t1b import generate as generate_counterfactual_mechanism_pairs
-from stimuli.grammars.t1b import generate_behavioral_items as counterfactual_mechanism_behavioral_items
-
-VALID_COUNTERFACTUAL_PAIR_TYPES = {
-    ("forward_causal", "backtracking"),
-    ("forward_causal", "common_cause"),
-    ("backtracking", "common_cause"),
-}
-
-class TestCounterfactualMechanismGrammar:
-
-    def test_generate_returns_correct_count(self):
-        assert len(generate_counterfactual_mechanism_pairs(30)) == 30
-
-    def test_generate_required_keys_present(self):
-        for pair in generate_counterfactual_mechanism_pairs(10):
-            assert REQUIRED_PAIR_KEYS.issubset(pair.keys())
-
-    def test_generate_thread_id_is_t1b(self):
-        for pair in generate_counterfactual_mechanism_pairs(10):
-            assert pair["thread_id"] == "t1b"
-
-    def test_generate_label_pairs_valid(self):
-        for pair in generate_counterfactual_mechanism_pairs(30):
-            assert (pair["label_a"], pair["label_b"]) in VALID_COUNTERFACTUAL_PAIR_TYPES
-
-    def test_generate_all_three_pair_types_present(self):
-        pairs = generate_counterfactual_mechanism_pairs(300)
-        found = {(stimulus_pair["label_a"], stimulus_pair["label_b"]) for stimulus_pair in pairs}
-        assert found == VALID_COUNTERFACTUAL_PAIR_TYPES
-
-    def test_generate_type_a_count(self):
-        pairs = generate_counterfactual_mechanism_pairs(300)
-        type_a = sum(1 for stimulus_pair in pairs if stimulus_pair["label_a"] == "forward_causal" and stimulus_pair["label_b"] == "backtracking")
-        assert type_a == 250
-
-    def test_generate_pair_ids_sequential(self):
-        pairs = generate_counterfactual_mechanism_pairs(10)
-        for index, pair in enumerate(pairs):
-            assert pair["pair_id"] == f"t1b_{index + 1:04d}"
-
-    def test_generate_frequency_matched_is_false(self):
-        for pair in generate_counterfactual_mechanism_pairs(10):
-            assert pair["frequency_matched"] is False
-
-    def test_generate_reproducible_with_same_seed(self):
-        assert generate_counterfactual_mechanism_pairs(30, seed=5) == generate_counterfactual_mechanism_pairs(30, seed=5)
-
-    def test_generate_different_seeds_give_different_order(self):
-        order_a = [(stimulus_pair["sentence_a"], stimulus_pair["sentence_b"]) for stimulus_pair in generate_counterfactual_mechanism_pairs(30, seed=1)]
-        order_b = [(stimulus_pair["sentence_a"], stimulus_pair["sentence_b"]) for stimulus_pair in generate_counterfactual_mechanism_pairs(30, seed=2)]
-        assert order_a != order_b
-
-    def test_generate_exceeds_max_raises(self):
-        with pytest.raises(ValueError, match="300"):
-            generate_counterfactual_mechanism_pairs(301)
-
-    def test_generate_sentences_nonempty(self):
-        for pair in generate_counterfactual_mechanism_pairs(10):
-            assert len(pair["sentence_a"]) > 0
-            assert len(pair["sentence_b"]) > 0
-
-    def test_behavioral_items_count(self):
-        assert len(counterfactual_mechanism_behavioral_items()) == 8
-
-    def test_behavioral_items_required_keys(self):
-        for item in counterfactual_mechanism_behavioral_items():
-            assert {"question", "choice_a", "choice_b", "correct"}.issubset(item.keys())
-
-    def test_behavioral_items_correct_field_valid(self):
-        for item in counterfactual_mechanism_behavioral_items():
-            assert item["correct"] in ("a", "b")
-
-
 # ── stimuli/grammars/t1c.py ───────────────────────────────────────────────────
 
 from stimuli.grammars.t1c import generate as generate_near_miss_pairs
@@ -1131,9 +1055,10 @@ def _lockable_config(**overrides) -> ExperimentConfig:
 class TestPythiaThreadIdInvariants:
     """
     Regression: thread-specific invariant gates key on the BASE thread id, so a
-    '_pythia' replication thread cannot silently bypass V5/V10/V14/V15. This is
-    the bug that let t1b_pythia run without the T1a-level3 prerequisite and
-    t1d_pythia lock without identification_criterion/confounder_structure.
+    '_pythia' replication thread cannot silently bypass V5/V14/V15/V23. This is
+    the bug that let t1b_pythia run without its gate (now V23 matrix
+    decorrelation) and t1d_pythia lock without
+    identification_criterion/confounder_structure.
     """
 
     # --- lock(): V14 / V15 enforced for t1d_pythia exactly as for t1d ---
@@ -1164,57 +1089,71 @@ class TestPythiaThreadIdInvariants:
         with pytest.raises(ValueError, match="V17"):
             config.lock()
 
-    # --- check_phase_gate(): V10 (T1a level3) enforced for t1b_pythia ---
+    # --- check_phase_gate(): V23 (matrix decorrelation) enforced for t1b_pythia ---
+    # Under the mechanism-geometry design, t1b_pythia gates on the decorrelation
+    # of M_graph/M_sim (V23), NOT on a T1a-level3 prerequisite. The base-id
+    # normalization still applies: '_pythia' must be subject to the same V23 gate
+    # as the base 't1b' thread.
 
     def _seed_gate_files(self, root: Path, thread_id: str) -> None:
-        """Write the V8/V11 prerequisites so the gate reaches the V10 check."""
+        """Write the V8/V11 prerequisites so the gate reaches the V23 check."""
         results = root / "experiments" / thread_id / "results"
         results.mkdir(parents=True, exist_ok=True)
         save_result({"passed": True, "accuracy": 0.9}, results / "behavioral_gate.json")
         save_result({"surface_classifier_accuracy": 0.5}, results / "surface_null.json")
 
-    def _seed_prerequisite(self, root: Path, prereq_id: str, level3: bool) -> None:
-        results = root / "experiments" / prereq_id / "results"
+    def _seed_decorrelation(self, root: Path, thread_id: str, passed: bool) -> None:
+        results = root / "experiments" / thread_id / "results"
         results.mkdir(parents=True, exist_ok=True)
-        save_result({"level3_confirmed": level3}, results / "summary.json")
+        save_result(
+            {"passed": passed, "corr": 0.03 if passed else 0.6},
+            results / "matrix_decorrelation.json",
+        )
 
-    def test_t1b_pythia_gate_blocks_when_prereq_level3_false(self, tmp_path, monkeypatch):
+    def test_t1b_pythia_gate_blocks_when_decorrelation_failed(self, tmp_path, monkeypatch):
         import experiments.run as run_module
         monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
 
         self._seed_gate_files(tmp_path, "t1b_pythia")
-        self._seed_prerequisite(tmp_path, "t1a_pythia", level3=False)
+        self._seed_decorrelation(tmp_path, "t1b_pythia", passed=False)
 
         config = _lockable_config(
             thread_id="t1b_pythia",
-            prerequisite_experiment_id="t1a_pythia",
+            matrix_source="stimuli/theoretical_matrices/t1b_matrices.py",
+            prerequisite_experiment_id=None,
         )
         config.lock()
-        with pytest.raises(ValueError, match="V10"):
+        with pytest.raises(ValueError, match="V23"):
             run_module.check_phase_gate(config)
 
-    def test_t1b_pythia_gate_passes_when_prereq_level3_true(self, tmp_path, monkeypatch):
+    def test_t1b_pythia_gate_passes_when_decorrelation_passed(self, tmp_path, monkeypatch):
         import experiments.run as run_module
         monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
 
         self._seed_gate_files(tmp_path, "t1b_pythia")
-        self._seed_prerequisite(tmp_path, "t1a_pythia", level3=True)
+        self._seed_decorrelation(tmp_path, "t1b_pythia", passed=True)
 
         config = _lockable_config(
             thread_id="t1b_pythia",
-            prerequisite_experiment_id="t1a_pythia",
+            matrix_source="stimuli/theoretical_matrices/t1b_matrices.py",
+            prerequisite_experiment_id=None,
         )
         config.lock()
         run_module.check_phase_gate(config)  # must not raise
 
-    def test_t1b_pythia_gate_requires_prerequisite_id(self, tmp_path, monkeypatch):
+    def test_t1b_pythia_gate_requires_decorrelation_artifact(self, tmp_path, monkeypatch):
         import experiments.run as run_module
         monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
 
+        # V8/V11 satisfied but no matrix_decorrelation.json written yet.
         self._seed_gate_files(tmp_path, "t1b_pythia")
-        config = _lockable_config(thread_id="t1b_pythia", prerequisite_experiment_id=None)
+        config = _lockable_config(
+            thread_id="t1b_pythia",
+            matrix_source="stimuli/theoretical_matrices/t1b_matrices.py",
+            prerequisite_experiment_id=None,
+        )
         config.lock()
-        with pytest.raises(ValueError, match="V10"):
+        with pytest.raises((ValueError, FileNotFoundError), match="V23"):
             run_module.check_phase_gate(config)
 
     def test_t1d_pythia_gate_enforces_v14(self, tmp_path, monkeypatch):
@@ -1233,6 +1172,53 @@ class TestPythiaThreadIdInvariants:
         config.pre_spec_locked = True
         with pytest.raises(ValueError, match="V14"):
             run_module.check_phase_gate(config)
+
+
+class TestT1bPhaseGate:
+    def _seed_common(self, root, thread_id):
+        results = root / "experiments" / thread_id / "results"
+        results.mkdir(parents=True, exist_ok=True)
+        save_result({"passed": True, "accuracy": 0.9}, results / "behavioral_gate.json")
+        save_result({"surface_classifier_accuracy": 0.5}, results / "surface_null.json")
+        return results
+
+    def test_t1b_gate_blocks_without_decorrelation_artifact(self, tmp_path, monkeypatch):
+        import experiments.run as run_module
+        monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
+        self._seed_common(tmp_path, "t1b")
+        config = _lockable_config(
+            thread_id="t1b",
+            matrix_source="stimuli/theoretical_matrices/t1b_matrices.py",
+        )
+        config.lock()
+        with pytest.raises((ValueError, FileNotFoundError), match="V23"):
+            run_module.check_phase_gate(config)
+
+    def test_t1b_gate_blocks_when_decorrelation_failed(self, tmp_path, monkeypatch):
+        import experiments.run as run_module
+        monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
+        results = self._seed_common(tmp_path, "t1b")
+        save_result({"passed": False, "corr": 0.6}, results / "matrix_decorrelation.json")
+        config = _lockable_config(
+            thread_id="t1b",
+            matrix_source="stimuli/theoretical_matrices/t1b_matrices.py",
+        )
+        config.lock()
+        with pytest.raises(ValueError, match="V23"):
+            run_module.check_phase_gate(config)
+
+    def test_t1b_pythia_gate_passes_with_artifact(self, tmp_path, monkeypatch):
+        import experiments.run as run_module
+        monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
+        results = self._seed_common(tmp_path, "t1b_pythia")
+        save_result({"passed": True, "corr": 0.03}, results / "matrix_decorrelation.json")
+        config = _lockable_config(
+            thread_id="t1b_pythia",
+            matrix_source="stimuli/theoretical_matrices/t1b_matrices.py",
+            prerequisite_experiment_id=None,
+        )
+        config.lock()
+        run_module.check_phase_gate(config)  # must not raise
 
 
 class TestBaseThreadSingleSource:
@@ -1366,3 +1352,98 @@ class TestPartialMantel:
         for key in ("partial_r", "p_value", "significant", "null_95th_percentile",
                     "exceeds_null_floor", "n_perms"):
             assert key in result
+
+
+class TestAsymmetryIndex:
+    def test_symmetric_is_zero(self):
+        from interventions.interventions import asymmetry_index
+        assert asymmetry_index(0.5, 0.5) == 0.0
+
+    def test_directed_is_positive(self):
+        from interventions.interventions import asymmetry_index
+        assert asymmetry_index(1.0, 0.0) == 1.0
+        assert 0.39 < asymmetry_index(0.7, 0.3) < 0.45
+
+    def test_zero_denominator_is_nan(self):
+        import math
+        from interventions.interventions import asymmetry_index
+        assert math.isnan(asymmetry_index(0.0, 0.0))
+
+
+class TestT1bGrammar:
+    def test_generate_emits_factorial_labels(self):
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "t1b_grammar", Path("stimuli/grammars/t1b.py"))
+        grammar = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(grammar)
+        pairs = grammar.generate(n=80, seed=42)
+        labels = set()
+        for pair in pairs:
+            labels.add(pair["label_a"]); labels.add(pair["label_b"])
+        # every label is "structure|domain"
+        for label in labels:
+            assert "|" in label
+            structure = label.split("|", 1)[0]
+            assert structure in {"chain", "fork", "direct", "collider", "direct_asym"}
+        # all four core structures present
+        core = {label.split("|", 1)[0] for label in labels}
+        assert {"chain", "fork", "direct", "collider"}.issubset(core)
+
+    def test_cells_are_balanced(self):
+        import importlib.util
+        from pathlib import Path
+        from collections import Counter
+        spec = importlib.util.spec_from_file_location(
+            "t1b_grammar", Path("stimuli/grammars/t1b.py"))
+        grammar = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(grammar)
+        pairs = grammar.generate(n=grammar._MAX_PAIRS, seed=42)
+        counts = Counter()
+        for pair in pairs:
+            for key in ("label_a", "label_b"):
+                label = pair[key]
+                if label.split("|", 1)[0] in {"chain", "fork", "direct", "collider"}:
+                    counts[label] += 1
+        # the four-structure cells should be within 1 of equal (balanced factorial)
+        core_counts = list(counts.values())
+        assert max(core_counts) - min(core_counts) <= 1
+
+    def test_behavioral_items_are_do_see(self):
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "t1b_grammar", Path("stimuli/grammars/t1b.py"))
+        grammar = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(grammar)
+        items = grammar.generate_behavioral_items()
+        assert len(items) >= 8
+        # each item is a forced-choice with the required keys
+        for item in items:
+            assert set(("question", "choice_a", "choice_b", "correct")).issubset(item)
+            assert item["correct"] in ("a", "b")
+        # at least one item contrasts observe vs intervene wording
+        blob = " ".join(item["question"].lower() for item in items)
+        assert ("saw" in blob or "observed" in blob)
+        assert ("forced" in blob or "made" in blob or "turned" in blob or "set" in blob)
+
+
+class TestT1bConfigProvenance:
+    def test_t1b_lock_requires_matrix_source(self):
+        config = _lockable_config(thread_id="t1b", matrix_source=None)
+        with pytest.raises(ValueError, match="V23"):
+            config.lock()
+
+    def test_t1b_pythia_lock_requires_matrix_source(self):
+        config = _lockable_config(thread_id="t1b_pythia", matrix_source=None)
+        with pytest.raises(ValueError, match="V23"):
+            config.lock()
+
+    def test_t1b_lock_succeeds_with_matrix_source(self):
+        config = _lockable_config(
+            thread_id="t1b",
+            matrix_source="stimuli/theoretical_matrices/t1b_matrices.py",
+        )
+        config.lock()
+        assert config.pre_spec_locked is True

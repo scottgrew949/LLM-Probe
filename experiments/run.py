@@ -168,10 +168,10 @@ def run_surface_null(config: ExperimentConfig) -> dict[str, Any]:
         surface_classifier, surface_feature_matrix, encoded_labels, config.seed,
         groups=surface_pair_group_ids,
     )
-    if surface_cross_validation["scores"] is None:
+    if surface_cross_validation["accuracy_scores"] is None:
         surface_classifier_accuracy = float("nan")
     else:
-        surface_classifier_accuracy = float(surface_cross_validation["scores"].mean())
+        surface_classifier_accuracy = float(surface_cross_validation["accuracy_scores"].mean())
 
     surface_null_result = {
         "surface_classifier_accuracy": surface_classifier_accuracy,
@@ -259,8 +259,8 @@ def check_phase_gate(config: ExperimentConfig) -> None:
             f"Run run_surface_null(config) before any other analysis."
         )
 
-    # V10: T1b and T1c require T1a to have confirmed Level 3 encoding
-    if base_thread_id in ("t1b", "t1c"):
+    # V10: T1c requires T1a to have confirmed Level 3 encoding (via its T1b prereq chain).
+    if base_thread_id == "t1c":
         if config.prerequisite_experiment_id is None:
             raise ValueError(
                 "V10: T1b/T1c require prerequisite_experiment_id set in config. "
@@ -347,6 +347,27 @@ def check_phase_gate(config: ExperimentConfig) -> None:
         if config.ontology_version is None or config.matrix_source is None:
             raise ValueError(
                 "V13: T4 requires ontology_version and matrix_source set in config."
+            )
+
+    # V23: T1b RSA discriminator requires decorrelated theoretical matrices.
+    if base_thread_id == "t1b":
+        if config.matrix_source is None:
+            raise ValueError(
+                "V23: T1b requires matrix_source (the M_graph/M_sim builder) set in config."
+            )
+        decorrelation_path = results_directory / "matrix_decorrelation.json"
+        if not decorrelation_path.exists():
+            raise FileNotFoundError(
+                f"V23: matrix_decorrelation.json not found at {decorrelation_path}. "
+                f"The T1b runner must build the matrices and record their decorrelation "
+                f"before the experiment proceeds."
+            )
+        decorrelation_result = load_result(decorrelation_path)
+        if not decorrelation_result.get("passed", False):
+            raise ValueError(
+                f"V23: M_graph and M_sim are collinear "
+                f"(corr={decorrelation_result.get('corr')}). The discriminator is void; "
+                f"rebalance the factorial stimulus cells."
             )
 
 

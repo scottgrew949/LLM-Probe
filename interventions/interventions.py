@@ -559,3 +559,21 @@ def patch_t6_cross_context(
         effect_per_context[context_type] = patch_result["top_probs"][0]
 
     return {"effect_per_context_type": effect_per_context}
+
+
+def asymmetry_index(kl_cause_to_effect: float, kl_effect_to_cause: float) -> float:
+    """
+    Directionality of causal influence in the representation.
+
+    A = (KL_cause->effect - KL_effect->cause) / (KL_cause->effect + KL_effect->cause)
+
+    A near +1: patching the cause representation moves the effect far more than the
+    reverse — a DIRECTED graph (Pearl). A near 0: symmetric — a similarity metric
+    (Lewis, under the symmetric-similarity idealization; see spec footnote).
+    Returns float('nan') when both effects are zero — no signal, so
+    symmetric vs asymmetric is undefined (not 'symmetric').
+    """
+    denominator = kl_cause_to_effect + kl_effect_to_cause
+    if denominator == 0:
+        return float("nan")
+    return (kl_cause_to_effect - kl_effect_to_cause) / denominator

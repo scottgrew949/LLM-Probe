@@ -58,11 +58,36 @@ BASE_THREAD_IDS: frozenset[str] = frozenset({
 """The philosophical threads. A run's invariants are determined by which of these
 its thread_id reduces to."""
 
-MODEL_VARIANT_SUFFIXES: tuple[str, ...] = ("_gpt2", "_pythia")
-"""Per-model run suffixes appended to a base thread_id so each model's run lands
-in its own results directory (e.g. 't1a_gpt2', 't1a_pythia'). The bare base id
-('t1a') is a logical key only — stimuli + invariants — never a run directory.
-Extend here (e.g. '_llama') when a new model is added; nothing else changes."""
+MODEL_SPECS: dict[str, str] = {
+    "_gpt2": "gpt2-medium",
+    "_pythia": "EleutherAI/pythia-1.4b",
+}
+"""Per-model run suffix → HuggingFace model id. The SINGLE source for both 'which
+suffixes are valid runs' and 'which model each suffix loads'. A suffix appended to
+a base thread_id sends that run's results to its own directory (e.g. 't1a_gpt2',
+'t1a_pythia'); the bare base id ('t1a') is a logical key only — stimuli +
+invariants — never a run directory. Add a model (e.g. '_llama':
+'meta-llama/Llama-3.2-3B') here and nothing else changes: the runner shims,
+validation pipeline, and invariant gates all derive from this map. Layer count is
+read at runtime from model.cfg.n_layers — never hardcoded."""
+
+MODEL_VARIANT_SUFFIXES: tuple[str, ...] = tuple(MODEL_SPECS)
+"""Derived from MODEL_SPECS keys — the run-variant suffixes recognised by
+base_thread_of() and valid_thread_ids()."""
+
+
+def model_id_for_thread(thread_id: str) -> str:
+    """
+    The HuggingFace model id a thread_id runs on, from its variant suffix.
+
+    't1b_pythia' → 'EleutherAI/pythia-1.4b'. A bare base id (no suffix) defaults to
+    'gpt2-medium' (local-dev model). Single lookup point shared by the runner
+    template and the validation pipeline.
+    """
+    for variant_suffix, model_id in MODEL_SPECS.items():
+        if thread_id.endswith(variant_suffix):
+            return model_id
+    return "gpt2-medium"
 
 
 def base_thread_of(thread_id: str) -> str:
@@ -415,6 +440,15 @@ class ExperimentConfig:
             raise ValueError(
                 "intension_type is None (V17). "
                 "Set to 'primary', 'secondary', or 'dissociation' before locking T2c config."
+            )
+
+        # V23: T1b RSA requires documented matrix provenance (which builder made
+        # M_graph / M_sim). The decorrelation itself is enforced at matrix-build
+        # time and re-checked in check_phase_gate; this is the provenance half.
+        if self.base_thread == "t1b" and self.matrix_source is None:
+            raise ValueError(
+                "matrix_source is None (V23). Set it to the matrix builder "
+                "('stimuli/theoretical_matrices/t1b_matrices.py') before locking T1b config."
             )
 
         self.pre_spec_locked = True

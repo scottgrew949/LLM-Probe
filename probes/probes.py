@@ -959,7 +959,7 @@ def run_partial_mantel_test(
         covariate_ranks = rankdata(covariate_flat)
         model_residual = _residualize(model_ranks, covariate_ranks)
         theory_residual = _residualize(theory_ranks, covariate_ranks)
-        if model_residual.std() == 0 or theory_residual.std() == 0:
+        if model_residual.std() < 1e-10 or theory_residual.std() < 1e-10:
             return 0.0
         return float(np.corrcoef(model_residual, theory_residual)[0, 1])
 
