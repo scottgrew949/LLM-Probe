@@ -737,9 +737,14 @@ class T1cExperiment(ThreadExperiment):
     not separability — a probe separates the two under both theories.
     """
 
-    def _prereq_thread_id(self) -> str:
-        """The T1b run this T1c depends on: same model variant."""
+    def _t1a_thread_id(self) -> str:
+        """T1a run for the V10 gate: same model variant, level3_confirmed required."""
         suffix = self.thread_id[len(self.base_thread):]  # "_gpt2" or "_pythia"
+        return "t1a" + suffix
+
+    def _prereq_thread_id(self) -> str:
+        """T1b run for pearl_confirmed context: same model variant."""
+        suffix = self.thread_id[len(self.base_thread):]
         return "t1b" + suffix
 
     def _t1b_summary_path(self) -> Path:
@@ -800,7 +805,9 @@ class T1cExperiment(ThreadExperiment):
             stimulus_sha256=compute_sha256(self.validated_path),
             frequency_match_verified=verify_stimulus_file_frequency_matched(self.validated_path),
             expected_outcomes=expected_outcomes,
-            prerequisite_experiment_id=self._prereq_thread_id(),
+            # V10 gate checks level3_confirmed on this prereq — must be T1a, not T1b.
+            # T1b is loaded separately in _check_guards() for pearl_confirmed context.
+            prerequisite_experiment_id=self._t1a_thread_id(),
         )
         config.lock()
         return config

@@ -50,6 +50,17 @@ if MODEL_VARIANT_SUFFIX not in MODEL_BY_SUFFIX:
     print("Known suffixes: " + ", ".join(sorted(s for s in MODEL_BY_SUFFIX if s)))
     sys.exit(1)
 
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+GRAMMAR_FILE    = PROJECT_ROOT / "stimuli" / "grammars" / (BASE_THREAD + ".py")
+GENERATED_PATH  = PROJECT_ROOT / "stimuli" / "generated" / BASE_THREAD / "pairs.jsonl"
+VALIDATED_PATH  = PROJECT_ROOT / "stimuli" / "validated" / BASE_THREAD / "pairs.validated.jsonl"
+GATE_RESULT_PATH = PROJECT_ROOT / "experiments" / THREAD_ID / "results" / "behavioral_gate.json"
+
+if not GRAMMAR_FILE.exists():
+    print("ERROR: Grammar file not found: " + str(GRAMMAR_FILE))
+    sys.exit(1)
+
 # Generation is LAZY and model-agnostic: the first run that needs the base thread's
 # stimuli generates+validates them; later runs (other models) reuse them.
 STIMULI_ALREADY_VALIDATED = VALIDATED_PATH.exists()
@@ -76,17 +87,6 @@ if BASE_THREAD not in N_PAIRS_BY_THREAD:
     sys.exit(1)
 
 N_PAIRS = N_PAIRS_BY_THREAD[BASE_THREAD]
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
-
-GRAMMAR_FILE    = PROJECT_ROOT / "stimuli" / "grammars" / (BASE_THREAD + ".py")
-GENERATED_PATH  = PROJECT_ROOT / "stimuli" / "generated" / BASE_THREAD / "pairs.jsonl"
-VALIDATED_PATH  = PROJECT_ROOT / "stimuli" / "validated" / BASE_THREAD / "pairs.validated.jsonl"
-GATE_RESULT_PATH = PROJECT_ROOT / "experiments" / THREAD_ID / "results" / "behavioral_gate.json"
-
-if not GRAMMAR_FILE.exists():
-    print("ERROR: Grammar file not found: " + str(GRAMMAR_FILE))
-    sys.exit(1)
 
 # ── Imports ───────────────────────────────────────────────────────────────────
 
