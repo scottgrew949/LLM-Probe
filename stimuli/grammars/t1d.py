@@ -2,232 +2,215 @@
 stimuli/grammars/t1d.py — Stimulus grammar for Thread T1d (causal identification).
 
 ─── CONCEPT: What T1d tests ──────────────────────────────────────────────────
-T1b established which counterfactual mechanism GPT-2 uses (Lewis or Pearl).
-T1d tests a deeper question: does the model's representation respect do-calculus
-identification conditions?
+T1b established which counterfactual mechanism GPT-2 uses. T1d tests a deeper
+question: does the representation respect Pearl's do-calculus *identification*
+conditions — when a causal effect can be recovered from observational data?
 
-Pearl's do-calculus provides formal criteria for when a causal effect can be
-identified (estimated) from observational data despite confounding. Two key criteria:
+─── CONCEPT: The discriminator is an IMPLICIT structural property ────────────
+Identifiability of P(Y | do(X)) in a confounded graph X←Z→Y, X→Y turns on ONE
+thing: whether the confounder Z is **observed**. If Z is measured, the back-door
+adjustment identifies the effect; if Z is hidden, no adjustment set exists and
+the effect is not identified. Nothing else about the graph changes.
 
-  Back-door criterion: A set Z of observed variables satisfies back-door for
-    (X, Y) if Z blocks all back-door paths from X to Y and no Z is a descendant
-    of X. If satisfied, P(Y|do(X)) = sum_z P(Y|X,z)P(z).
+The earlier version of this grammar STATED the verdict in the stimulus ("the
+adjusted estimate is valid", "the effect cannot be identified", "P(Y|X) equals
+P(Y|do(X))"). A probe then only had to detect those phrases — a keyword
+classifier, not a representation of identifiability. This version states NO
+verdict. The back_door and confounded conditions are **minimal pairs** that
+differ in exactly one word: whether the confounder is described as observed or
+hidden. The probe must encode that structural property — which *is* the
+identifiability-relevant feature — with no lexical tell of the answer.
 
-  Front-door criterion: A set M satisfies front-door for (X, Y) if M blocks
-    all directed paths from X to Y, there are no unblocked back-door paths from
-    X to M, and all back-door paths from M to Y are blocked by X.
+─── CONCEPT: Lexically varied observed/hidden cue ────────────────────────────
+If every identified case said "measured" and every non-identified case said
+"hidden", the probe could read those two words. Each draws from a matched list of
+synonyms — {recorded, measured, tracked, logged, observed} vs {unrecorded,
+unmeasured, untracked, unlogged, hidden} — so the encoded distinction is the
+*category* (observed vs unobserved), not a single lexical item.
 
 ─── CONCEPT: Four conditions ─────────────────────────────────────────────────
-back_door_adjustable: confounded, observed covariate Z blocks the back-door path.
-  Back-door adjustment valid: P(Y|do(X)) = sum_z P(Y|X,z)P(z).
+back_door_adjustable      X→Y, Z→{X,Y}, Z OBSERVED. Identified by adjustment.
+confounded_not_adjustable X→Y, Z→{X,Y}, Z HIDDEN.   Not identified.
+  ↑ these two are the primary minimal-pair contrast (the only difference is the
+    observed/hidden cue, which is exactly what flips identifiability).
+front_door_adjustable     X→M→Y, hidden U→{X,Y}, mediator M OBSERVED. Identified
+                          via the front door. A second, distinct identification route.
+unconfounded_control      X→Y, no common cause. Trivially identified. Positive control.
 
-front_door_adjustable: hidden confounder U affects both X and Y, but mediator M
-  (X -> M -> Y) is observed. Front-door adjustment valid via M.
-
-confounded_not_adjustable: confounded, but no valid adjustment set is available.
-  The causal effect is not identified from observational data.
-
-unconfounded_control: simple direct causation X -> Y. No confounding.
-  Trivially identified. Positive control.
-
-─── CONCEPT: Geometric prediction ────────────────────────────────────────────
-If model encodes identifiability:
-  adjustable (back_door + front_door) clusters away from not_adjustable.
-  run_identification_probe in probes/probes.py tests this binary split.
-
-If model implements Pearl's full do-calculus:
-  All four conditions are linearly separable — each causal graph structure
-  has a geometrically distinct internal representation.
+─── CONCEPT: Primary criterion ───────────────────────────────────────────────
+The headline test is the binary back_door_adjustable vs confounded_not_adjustable
+contrast (graph-isomorphic, observed vs hidden confounder) — this isolates
+adjustability. front_door and unconfounded are additional identified conditions,
+reported separately; lumping all three identified types together inflates a
+binary probe via the easy unconfounded split rather than testing adjustability.
 """
 
 from __future__ import annotations
 
+import itertools
 import random
 from typing import Any
 
 
-# ── Back-door adjustable templates ───────────────────────────────────────────
-# Structure: X -> Y, Z -> {X, Y}. Z observed. Back-door criterion satisfied.
+# ── Observed / hidden cue (the identifiability flip), lexically varied ─────────
+_OBSERVED_CUES: list[str] = ["recorded", "measured", "tracked", "logged", "observed"]
+_HIDDEN_CUES:   list[str] = ["unrecorded", "unmeasured", "untracked", "unlogged", "hidden"]
 
-BACK_DOOR_TEMPLATES: list[tuple[str, str]] = [
-    (
-        "{agent} {treatment_verb} because of {confounder}. "
-        "{confounder_capitalized} also directly affects {outcome_noun}. "
-        "Adjusting for {confounder}, {agent}'s {treatment_noun} changes {outcome_noun}.",
-        "{agent} does not {treatment_verb_base}. "
-        "{confounder_capitalized} still affects {outcome_noun} directly. "
-        "Without {treatment_noun}, {outcome_noun} differs by {confounder} alone.",
-    ),
-    (
-        "Researchers found that {treatment_noun} increases {outcome_noun}. "
-        "Both are influenced by {confounder}. "
-        "Controlling for {confounder} isolates the direct effect of {treatment_noun}.",
-        "If {confounder} is held constant, {treatment_noun} still predicts {outcome_noun}. "
-        "The back-door path through {confounder} is blocked by conditioning. "
-        "The adjusted estimate is valid.",
-    ),
-]
 
-# ── Front-door adjustable templates ──────────────────────────────────────────
-# Structure: X -> M -> Y, hidden U -> {X, Y}. M observed. Front-door satisfied.
-
-FRONT_DOOR_TEMPLATES: list[tuple[str, str]] = [
-    (
-        "{treatment_noun} causes {mediator_noun}. "
-        "{mediator_noun} then causes {outcome_noun}. "
-        "A hidden factor affects both {treatment_noun} and {outcome_noun} independently.",
-        "Even with the hidden factor, {mediator_noun} fully mediates the path. "
-        "Front-door adjustment through {mediator_noun} identifies the causal effect. "
-        "The effect of {treatment_noun} on {outcome_noun} is estimable.",
-    ),
-    (
-        "{agent} was exposed to {treatment_noun}, which caused {mediator_noun}. "
-        "{mediator_noun} led to {outcome_noun}. "
-        "Genetic factors independently influenced both exposure and outcome.",
-        "The complete pathway runs through {mediator_noun}. "
-        "Adjusting for {mediator_noun} at each step recovers the total effect. "
-        "No direct {treatment_noun} to {outcome_noun} path bypasses {mediator_noun}.",
-    ),
-]
-
-# ── Confounded not adjustable templates ──────────────────────────────────────
-# Structure: X -> Y, U -> {X, Y}. U unobserved. No valid adjustment set.
-
-CONFOUNDED_NOT_ADJUSTABLE_TEMPLATES: list[tuple[str, str]] = [
-    (
-        "{treatment_noun} is associated with {outcome_noun}. "
-        "An unmeasured factor drives both. "
-        "No observed variable can block the confounding path.",
-        "The association between {treatment_noun} and {outcome_noun} is not causal. "
-        "Without observing the hidden factor, the effect cannot be identified. "
-        "The causal effect remains unestimable from this data.",
-    ),
-    (
-        "Studies show {treatment_noun} correlates with {outcome_noun}. "
-        "A latent variable affects both {treatment_noun} and {outcome_noun}. "
-        "No measured covariate satisfies the back-door criterion.",
-        "{agent}'s {treatment_noun} and {outcome_noun} share a hidden common cause. "
-        "Conditioning on observed variables does not remove the confounding. "
-        "The causal question is not answerable from this observational data.",
-    ),
-]
-
-# ── Unconfounded control templates ────────────────────────────────────────────
-# Structure: X -> Y. No confounding. Trivially identified.
-
-UNCONFOUNDED_TEMPLATES: list[tuple[str, str]] = [
-    (
-        "{treatment_noun} directly causes {outcome_noun}. "
-        "There are no common causes of both. "
-        "The causal effect is identifiable without adjustment.",
-        "Increasing {treatment_noun} increases {outcome_noun}. "
-        "No confounders affect this relationship. "
-        "The observational and interventional distributions are identical.",
-    ),
-    (
-        "{agent} applied {treatment_noun}, which produced {outcome_noun}. "
-        "No other factor influenced both. "
-        "The direct causal path is the only path between them.",
-        "Removing {treatment_noun} eliminates {outcome_noun}. "
-        "The relationship is purely causal with no confounding structure. "
-        "P(Y|X) equals P(Y|do(X)) in this case.",
-    ),
-]
-
-# ── Domain slots ──────────────────────────────────────────────────────────────
-
+# ── Domain slots — relations only, no verdict vocabulary ──────────────────────
 DOMAIN_SLOTS: list[dict[str, str]] = [
-    {
-        "agent": "John",
-        "treatment_verb": "smokes",
-        "treatment_verb_base": "smoke",
-        "treatment_noun": "smoking",
-        "outcome_noun": "lung cancer risk",
-        "confounder": "genetic predisposition",
-        "confounder_capitalized": "Genetic predisposition",
-        "mediator_noun": "tar deposits",
-    },
-    {
-        "agent": "The patient",
-        "treatment_verb": "exercises",
-        "treatment_verb_base": "exercise",
-        "treatment_noun": "exercise",
-        "outcome_noun": "cardiovascular health",
-        "confounder": "socioeconomic status",
-        "confounder_capitalized": "Socioeconomic status",
-        "mediator_noun": "reduced inflammation",
-    },
-    {
-        "agent": "The factory",
-        "treatment_verb": "emits pollutants",
-        "treatment_verb_base": "emit pollutants",
-        "treatment_noun": "pollution exposure",
-        "outcome_noun": "respiratory disease rates",
-        "confounder": "urban density",
-        "confounder_capitalized": "Urban density",
-        "mediator_noun": "particulate accumulation",
-    },
-    {
-        "agent": "The student",
-        "treatment_verb": "attends tutoring",
-        "treatment_verb_base": "attend tutoring",
-        "treatment_noun": "tutoring",
-        "outcome_noun": "exam scores",
-        "confounder": "parental income",
-        "confounder_capitalized": "Parental income",
-        "mediator_noun": "improved study habits",
-    },
+    {"treatment": "smoking",          "outcome": "lung cancer risk",        "confounder": "genetic predisposition", "mediator": "tar buildup"},
+    {"treatment": "regular exercise", "outcome": "cardiovascular health",   "confounder": "socioeconomic status",   "mediator": "lower inflammation"},
+    {"treatment": "factory emissions","outcome": "respiratory disease",     "confounder": "urban density",          "mediator": "airborne particulates"},
+    {"treatment": "tutoring",         "outcome": "exam scores",             "confounder": "family income",          "mediator": "study habits"},
 ]
+
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+# back_door and confounded share these frames verbatim — the cue ({cue}) is the
+# only slot that flips the condition, so the two conditions are minimal pairs.
+_CONFOUNDED_TEMPLATES: list[str] = [
+    "{treatment} affects {outcome}, and {confounder}, which is {cue}, affects both {treatment} and {outcome}.",
+    "{confounder}, which is {cue}, affects both {treatment} and {outcome}, and {treatment} affects {outcome}.",
+    "Here {treatment} affects {outcome} while {confounder}, which is {cue}, affects both of them.",
+]
+
+# front_door: X→M→Y with a hidden common cause; the mediator is observed.
+_FRONT_DOOR_TEMPLATES: list[str] = [
+    "{treatment} affects {outcome} only through {mediator}, which is {observed_cue}, while a {hidden_cue} factor affects both {treatment} and {outcome}.",
+    "{treatment} influences {mediator}, which is {observed_cue}, and {mediator} affects {outcome}, while a {hidden_cue} factor affects both ends.",
+    "The path from {treatment} to {outcome} runs through {mediator}, which is {observed_cue}, and a {hidden_cue} factor affects both {treatment} and {outcome}.",
+]
+
+# unconfounded: X→Y with no common cause.
+_UNCONFOUNDED_TEMPLATES: list[str] = [
+    "{treatment} affects {outcome}, and nothing else affects both {treatment} and {outcome}.",
+    "{treatment} affects {outcome}, with no other factor affecting both {treatment} and {outcome}.",
+    "Here {treatment} affects {outcome} and no common cause affects both of them.",
+]
+
+
+# back_door vs confounded: 4 domains × 3 templates × 5 cue-pairs = 60 minimal pairs
+# front_door vs unconfounded: 4 domains × 3 templates × 5 cue-pairs = 60 pairs
+_MAX_PAIRS: int = 120
 
 
 def generate(n: int, seed: int = 42) -> list[dict[str, Any]]:
     """
-    Generate n stimulus pairs for T1d — causal identification conditions.
+    Generate n T1d stimulus pairs across four identification conditions.
 
-    Pairs are balanced across four conditions: back_door_adjustable,
-    front_door_adjustable, confounded_not_adjustable, unconfounded_control.
+    Primary minimal-pair contrast (sentence_a vs sentence_b share a frame, differ
+    only in the observed/hidden cue, which is exactly what flips identifiability):
+      ("back_door_adjustable", "confounded_not_adjustable")
 
-    Each pair contrasts two sentences with different identification structures.
-    sentence_a is the primary condition; sentence_b is a contrast from a
-    different condition, so each pair directly tests the distinction.
+    Secondary contrast (additional identified route vs positive control):
+      ("front_door_adjustable", "unconfounded_control")
+
+    back_door and confounded are produced in equal numbers (60 each) so the binary
+    identifiability probe is over matched-size, matched-frame sets.
 
     Args:
-        n: number of pairs to generate.
-        seed: random seed for reproducibility.
+        n:    Number of pairs to return. Must be <= 120.
+        seed: Instance-level RNG seed.
 
     Returns:
-        List of dicts with keys: sentence_a, sentence_b, label_a, label_b.
+        List of n StimulusPair dicts conforming to stimulus.schema.json.
+
+    Raises:
+        ValueError: if n > 120.
     """
-    rng = random.Random(seed)
+    if n > _MAX_PAIRS:
+        raise ValueError(f"n={n} exceeds maximum of {_MAX_PAIRS} pairs.")
 
-    condition_template_map: dict[str, list[tuple[str, str]]] = {
-        "back_door_adjustable": BACK_DOOR_TEMPLATES,
-        "front_door_adjustable": FRONT_DOOR_TEMPLATES,
-        "confounded_not_adjustable": CONFOUNDED_NOT_ADJUSTABLE_TEMPLATES,
-        "unconfounded_control": UNCONFOUNDED_TEMPLATES,
-    }
-    condition_order = list(condition_template_map.keys())
+    cue_pairs = list(zip(_OBSERVED_CUES, _HIDDEN_CUES))
+    all_pairs: list[dict[str, Any]] = []
 
-    pairs: list[dict[str, Any]] = []
-    items_per_condition = max(1, n // len(condition_order))
+    def make_pair(sentence_a: str, sentence_b: str, label_a: str, label_b: str, notes: str) -> dict[str, Any]:
+        return {
+            "thread_id": "t1d",
+            "sentence_a": sentence_a,
+            "sentence_b": sentence_b,
+            "label_a": label_a,
+            "label_b": label_b,
+            "theoretical_distinction": "Pearl do-calculus identifiability (observed vs hidden confounder)",
+            "frequency_matched": False,
+            "generation_grammar": "stimuli/grammars/t1d.py",
+            "notes": notes,
+        }
 
-    for condition_label, condition_templates in condition_template_map.items():
-        contrast_conditions = [c for c in condition_order if c != condition_label]
-        for _ in range(items_per_condition):
-            domain_slots = rng.choice(DOMAIN_SLOTS)
-            template_a, _ = rng.choice(condition_templates)
-            contrast_label = rng.choice(contrast_conditions)
-            _, template_b = rng.choice(condition_template_map[contrast_label])
+    # Primary: back_door (observed confounder) vs confounded (hidden confounder) —
+    # minimal pairs, cue is the only difference.
+    for domain, template, (observed_cue, hidden_cue) in itertools.product(
+        DOMAIN_SLOTS, _CONFOUNDED_TEMPLATES, cue_pairs
+    ):
+        back_door_sentence = template.format(cue=observed_cue, **domain)
+        confounded_sentence = template.format(cue=hidden_cue, **domain)
+        all_pairs.append(make_pair(
+            back_door_sentence, confounded_sentence,
+            "back_door_adjustable", "confounded_not_adjustable",
+            notes=f"minimal pair: confounder '{observed_cue}' (identified) vs '{hidden_cue}' (not identified)",
+        ))
 
-            sentence_a = template_a.format(**domain_slots)
-            sentence_b = template_b.format(**domain_slots)
+    # Secondary: front_door (identified via observed mediator) vs unconfounded
+    # control. Each front-door frame is paired with one unconfounded frame chosen
+    # by index, so this yields 4 × 3 × 5 = 60 pairs (matched to the primary count).
+    for template_index, (domain, front_template, (observed_cue, hidden_cue)) in enumerate(
+        itertools.product(DOMAIN_SLOTS, _FRONT_DOOR_TEMPLATES, cue_pairs)
+    ):
+        unconf_template = _UNCONFOUNDED_TEMPLATES[template_index % len(_UNCONFOUNDED_TEMPLATES)]
+        front_sentence = front_template.format(observed_cue=observed_cue, hidden_cue=hidden_cue, **domain)
+        unconf_sentence = unconf_template.format(**domain)
+        all_pairs.append(make_pair(
+            front_sentence, unconf_sentence,
+            "front_door_adjustable", "unconfounded_control",
+            notes="front-door identified (observed mediator) vs unconfounded positive control",
+        ))
 
-            pairs.append({
-                "sentence_a": sentence_a,
-                "sentence_b": sentence_b,
-                "label_a": condition_label,
-                "label_b": contrast_label,
-            })
+    random.Random(seed).shuffle(all_pairs)
+    selected_pairs = all_pairs[:n]
 
-    rng.shuffle(pairs)
-    return pairs[:n]
+    for index, pair in enumerate(selected_pairs):
+        pair["pair_id"] = f"t1d_{index + 1:04d}"
+
+    return selected_pairs
+
+
+def generate_behavioral_items() -> list[dict[str, Any]]:
+    """
+    Return behavioral gate items for T1d.
+
+    Competence check: the model should recognize that an association driven by a
+    common cause is not evidence of a direct causal effect, and that adjusting for
+    an observed common cause is what licenses a causal read. Forced-choice; the
+    structural cue (observed vs hidden) is named so the gate tests reasoning, not
+    the minimal-pair inference the stimuli isolate.
+
+    Returns:
+        List of 4 forced-choice dicts: question, choice_a, choice_b, correct.
+    """
+    return [
+        {
+            "question": "Smoking and lung cancer are both driven by a hidden common cause. From this data alone, the effect of smoking on cancer is",
+            "choice_a": "not identifiable",
+            "choice_b": "identifiable",
+            "correct": "a",
+        },
+        {
+            "question": "A confounder of treatment and outcome is fully measured. Adjusting for it, the causal effect of treatment is",
+            "choice_a": "identifiable",
+            "choice_b": "not identifiable",
+            "correct": "a",
+        },
+        {
+            "question": "Two variables are correlated only because an unmeasured factor drives both. Their correlation is",
+            "choice_a": "not causal",
+            "choice_b": "causal",
+            "correct": "a",
+        },
+        {
+            "question": "Treatment affects outcome only through an observed mediator, with a hidden common cause. Via the mediator, the effect is",
+            "choice_a": "identifiable",
+            "choice_b": "not identifiable",
+            "correct": "a",
+        },
+    ]

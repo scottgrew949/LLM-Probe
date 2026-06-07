@@ -1,5 +1,5 @@
 """
-experiments/t1a/run_experiment.py — T1a full mechanistic experiment.
+experiments/t1a_pythia/run_experiment.py — T1a mechanistic experiment on Pythia 1.4B.
 
 Runs the complete L2 + L3 pipeline for Thread T1a:
   - Locks ExperimentConfig with pre-specified outcomes (pre-registration)
@@ -13,7 +13,7 @@ Runs the complete L2 + L3 pipeline for Thread T1a:
 Prerequisite: experiments/t1a/run_validation.py must have run and passed.
 
 Usage (Colab):
-    !python experiments/t1a/run_experiment.py
+    !python experiments/t1a_pythia/run_experiment.py
 """
 
 from __future__ import annotations
@@ -31,15 +31,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-THREAD_ID  = "t1a"
-MODEL_ID   = "gpt2-medium"
+THREAD_ID  = "t1a_pythia"
+MODEL_ID   = "EleutherAI/pythia-1.4b"
 
-# GPT-2 medium: 24 layers (0-23). Layer 8 is the boundary between
-# "early" (syntactic/surface) and "middle/late" (semantic/causal).
-GPT2_MEDIUM_N_LAYERS   = 24
+# Pythia 1.4B: 24 layers (0-23). Same MIDDLE_LATE_LAYER_FLOOR=8 as GPT-2.
+PYTHIA_1_4B_N_LAYERS    = 24
 MIDDLE_LATE_LAYER_FLOOR = 8
 
-VALIDATED_PATH    = PROJECT_ROOT / "stimuli" / "validated" / THREAD_ID / "pairs.validated.jsonl"
+VALIDATED_PATH    = PROJECT_ROOT / "stimuli" / "validated" / "t1a" / "pairs.validated.jsonl"
 RESULTS_DIR       = PROJECT_ROOT / "experiments" / THREAD_ID / "results"
 CONFIG_PATH       = PROJECT_ROOT / "experiments" / THREAD_ID / "config.json"
 SURFACE_NULL_PATH = RESULTS_DIR / "surface_null.json"
@@ -53,7 +52,7 @@ if not VALIDATED_PATH.exists():
     print("  Expected: " + str(VALIDATED_PATH))
     print()
     print("This file is written by run_validation.py.")
-    print("Run experiments/t1a/run_validation.py first, then re-run this script.")
+    print("Run scripts/run_validation.py --thread t1a_pythia first, then re-run this script.")
     sys.exit(1)
 
 
@@ -112,16 +111,33 @@ expected_outcomes = {
         "distinction is stored at one depth and used at another. "
         "Information flow finding: encoding precedes use."
     ),
+    "cross_architecture_assumption_layer_floor": (
+        "ASSUMPTION (untested on Pythia): MIDDLE_LATE_LAYER_FLOOR=8 is reused "
+        "verbatim from GPT-2 medium, where layer 8 was the early(syntactic)/"
+        "middle-late(semantic) boundary. Pythia 1.4B also has 24 layers, but there "
+        "is no evidence its semantic-emergence depth is layer 8. The "
+        "syntactic-vs-semantic interpretation (outcome_if_separable_*) is therefore "
+        "provisional for Pythia. Treat the early/late split as a reported peak-layer "
+        "observation, not a pre-validated boundary, until a Pythia-specific floor is "
+        "justified."
+    ),
+    "cross_architecture_assumption_surface_null": (
+        "NOTE: surface_null features are corpus-frequency + token-length only "
+        "(model-agnostic) and use the same stimuli + seed as the GPT-2 run, so "
+        "surface_null.json here is numerically identical to t1a's. It satisfies V11 "
+        "but is NOT an independent Pythia baseline — it characterizes the stimuli, "
+        "not the model."
+    ),
 }
 
 date_stamp = datetime.date.today().strftime("%Y%m%d")
 
 config = ExperimentConfig(
-    experiment_id="t1a_gpt2m_" + date_stamp,
-    thread_id="t1a",
+    experiment_id="t1a_pythia14b_" + date_stamp,
+    thread_id=THREAD_ID,  # "t1a_pythia" — run_experiment() derives results dir from this
     model_id=MODEL_ID,
     model_revision="main",
-    layer_range=(0, GPT2_MEDIUM_N_LAYERS - 1),
+    layer_range=(0, PYTHIA_1_4B_N_LAYERS - 1),
     component="resid_post",
     token_positions=[-1],
     probe_type="linear",
@@ -136,7 +152,7 @@ config.to_json(CONFIG_PATH)
 
 print("  Experiment ID : " + config.experiment_id)
 print("  Stimulus file : " + str(VALIDATED_PATH))
-print("  Layers        : 0 to " + str(GPT2_MEDIUM_N_LAYERS - 1) + " (all " + str(GPT2_MEDIUM_N_LAYERS) + " layers)")
+print("  Layers        : 0 to " + str(PYTHIA_1_4B_N_LAYERS - 1) + " (all " + str(PYTHIA_1_4B_N_LAYERS) + " layers)")
 print("  Component     : resid_post (full residual stream)")
 print("  Token position: -1 (last token — full sentence context)")
 print("  Config locked : " + str(config.pre_spec_locked))
@@ -237,7 +253,7 @@ print()
 print("  Layer   Accuracy    Std    Chance")
 print("  -----   --------   -----   ------")
 
-for layer_index in range(GPT2_MEDIUM_N_LAYERS):
+for layer_index in range(PYTHIA_1_4B_N_LAYERS):
     probe_result_path           = RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json")
     probe_data                  = load_result(probe_result_path)
     probe_layer_accuracy        = probe_data["accuracy_mean"]
@@ -302,8 +318,7 @@ if level3_confirmed:
 else:
     print("T1b and T1c: BLOCKED")
     print()
-    print("  T1a did not confirm Pearl Level 3. GPT-2 medium treats interventional")
+    print("  T1a did not confirm Pearl Level 3. Pythia 1.4B treats interventional")
     print("  and observational framing identically at the representational level.")
-    print("  Cross-architecture replication on Pythia 1.4B recommended before")
-    print("  concluding Level 3 is absent.")
+    print("  Consider cross-architecture replication on Llama 3.2 3B.")
     sys.exit(1)

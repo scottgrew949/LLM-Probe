@@ -59,18 +59,19 @@ from sklearn.model_selection import (
     StratifiedKFold,
     StratifiedGroupKFold,
     GroupKFold,
-    cross_val_score,
+    cross_validate,
 )
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import LabelEncoder
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from scipy.stats import spearmanr
 
 
 # ── T1d identifiability split (single source of truth) ───────────────────────
 # Pearl identifiability collapses the four T1d conditions into two classes. Both
 # the L2 identification probe (run_identification_probe) and the L3 layer sweep
-# in experiments/t1d/run_experiment.py import these so they test the *same*
+# in experiments/t1d_gpt2/run_experiment.py import these so they test the *same*
 # contrast — identified vs not-identifiable — rather than drifting apart.
 #
 # unconfounded_control is *identified*: plain X -> Y with no confounding, so
@@ -127,12 +128,25 @@ def _adaptive_grouped_cv_accuracy(
         groups:         Optional group id per row. When provided, splits are
                         grouped; when None, plain StratifiedKFold is used.
 
+    Two scores are returned per fold: raw accuracy and balanced accuracy (mean of
+    per-class recall). Balanced accuracy is the honest number for imbalanced label
+    sets — raw accuracy of a constant majority-class classifier equals the majority
+    fraction, which can sit above a naive threshold, so any decision rule on
+    imbalanced data must read balanced accuracy (or accuracy vs the majority floor).
+
+    ─── Stratification transparency ─────────────────────────────────────────────
+    When the StratifiedGroupKFold constraints cannot be met we fall back to plain
+    GroupKFold and set "stratified": False, so the caller knows class balance
+    across folds was not guaranteed (per-fold class counts may be uneven).
+
     Returns:
         Dict with:
-          "scores":   np.ndarray | None — per-fold accuracy, None if CV skipped
-          "n_splits": int               — folds actually run (0 if skipped)
-          "grouped":  bool              — whether grouped splitting was used
-          "note":     str | None        — explanation, present only when skipped
+          "accuracy_scores":          np.ndarray | None — per-fold raw accuracy
+          "balanced_accuracy_scores": np.ndarray | None — per-fold balanced accuracy
+          "n_splits":   int   — folds actually run (0 if skipped)
+          "grouped":    bool  — whether grouped splitting was used
+          "stratified": bool  — whether stratification held (False on GroupKFold fallback)
+          "note":       str | None — explanation, present only when skipped
     """
     grouped = groups is not None
 
@@ -153,24 +167,38 @@ def _adaptive_grouped_cv_accuracy(
             + ("class-group" if grouped else "class")
             + f" count is {limiting_count} (< 2 folds possible). accuracy_mean is NaN."
         )
-        return {"scores": None, "n_splits": 0, "grouped": grouped, "note": note}
+        return {
+            "accuracy_scores": None, "balanced_accuracy_scores": None,
+            "n_splits": 0, "grouped": grouped, "stratified": False, "note": note,
+        }
 
+    scoring = ["accuracy", "balanced_accuracy"]
+    stratified = True
     if grouped:
         try:
             cross_val_splitter = StratifiedGroupKFold(n_splits=n_splits)
-            cross_val_scores = cross_val_score(
-                estimator, features, encoded_labels, cv=cross_val_splitter, groups=groups
+            cross_val_result = cross_validate(
+                estimator, features, encoded_labels, cv=cross_val_splitter,
+                groups=groups, scoring=scoring,
             )
         except ValueError:
+            stratified = False
             cross_val_splitter = GroupKFold(n_splits=n_splits)
-            cross_val_scores = cross_val_score(
-                estimator, features, encoded_labels, cv=cross_val_splitter, groups=groups
+            cross_val_result = cross_validate(
+                estimator, features, encoded_labels, cv=cross_val_splitter,
+                groups=groups, scoring=scoring,
             )
     else:
         cross_val_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-        cross_val_scores = cross_val_score(estimator, features, encoded_labels, cv=cross_val_splitter)
+        cross_val_result = cross_validate(
+            estimator, features, encoded_labels, cv=cross_val_splitter, scoring=scoring,
+        )
 
-    return {"scores": cross_val_scores, "n_splits": n_splits, "grouped": grouped, "note": None}
+    return {
+        "accuracy_scores": cross_val_result["test_accuracy"],
+        "balanced_accuracy_scores": cross_val_result["test_balanced_accuracy"],
+        "n_splits": n_splits, "grouped": grouped, "stratified": stratified, "note": None,
+    }
 
 
 # ── Linear probe ──────────────────────────────────────────────────────────────
@@ -180,6 +208,7 @@ def run_linear_probe(
     labels: list[str],
     config: Any,
     pair_ids: list[str] | None = None,
+    selectivity_seed: int | None = None,
 ) -> dict[str, Any]:
     """
     Train a logistic regression probe on activations and return accuracy + weights.
@@ -242,31 +271,41 @@ def run_linear_probe(
     label_encoder = LabelEncoder()
     encoded_labels = label_encoder.fit_transform(labels)
 
-    probe = LogisticRegression(max_iter=1000, C=1.0, random_state=config.seed)
+    # StandardScaler in a pipeline: resid_post scale varies across layers, so
+    # comparing raw cross-layer probe accuracy conflates information content with
+    # activation magnitude. Scaling is fit inside each CV fold (the pipeline is
+    # cloned per fold by cross_validate), so there is no train→test leakage.
+    def make_probe():
+        return make_pipeline(
+            StandardScaler(),
+            LogisticRegression(max_iter=1000, C=1.0, random_state=config.seed),
+        )
 
     # Leakage-safe, adaptive cross-validation. pair_ids is the group key: both
     # sentences of a minimal pair share one id and so stay on the same side of
     # every fold. None → ungrouped legacy behaviour. See _adaptive_grouped_cv_accuracy.
     cross_validation = _adaptive_grouped_cv_accuracy(
-        probe, activations, encoded_labels, config.seed, groups=pair_ids
+        make_probe(), activations, encoded_labels, config.seed, groups=pair_ids
     )
     grouped_by_pair_id = cross_validation["grouped"]
     skipped_note = cross_validation["note"]
 
-    if cross_validation["scores"] is None:
+    if cross_validation["accuracy_scores"] is None:
         accuracy_mean = float("nan")
         accuracy_std = float("nan")
+        balanced_accuracy_mean = float("nan")
         n_folds_run = 0
     else:
-        accuracy_mean = float(cross_validation["scores"].mean())
-        accuracy_std = float(cross_validation["scores"].std())
+        accuracy_mean = float(cross_validation["accuracy_scores"].mean())
+        accuracy_std = float(cross_validation["accuracy_scores"].std())
+        balanced_accuracy_mean = float(cross_validation["balanced_accuracy_scores"].mean())
         n_folds_run = cross_validation["n_splits"]
 
-    # Fit once more on the full dataset to extract probe weights.
-    # The accuracy above came from cross-val (held-out folds) — these weights
-    # come from the full-data fit and are used for geometric analysis only,
-    # not for evaluating accuracy.
-    probe.fit(activations, encoded_labels)
+    # Fit once more on the full dataset to extract probe weights (standardized
+    # space). Used for geometric analysis only, not accuracy.
+    full_pipeline = make_probe()
+    full_pipeline.fit(activations, encoded_labels)
+    probe_weights = full_pipeline.named_steps["logisticregression"].coef_
 
     unique_label_counts = np.bincount(encoded_labels)
     chance_baseline = unique_label_counts.max() / len(encoded_labels)
@@ -276,15 +315,32 @@ def run_linear_probe(
         "thread_id": config.thread_id,
         "accuracy_mean": accuracy_mean,
         "accuracy_std": accuracy_std,
+        "balanced_accuracy_mean": balanced_accuracy_mean,
         "chance_baseline": float(chance_baseline),
-        "weights": probe.coef_.tolist(),
+        "weights": probe_weights.tolist(),
         "labels_order": label_encoder.classes_.tolist(),
         "n_items": len(labels),
         "n_folds": n_folds_run,
         "grouped_by_pair_id": grouped_by_pair_id,
+        "stratified": cross_validation["stratified"],
     }
     if skipped_note is not None:
         result["note"] = skipped_note
+
+    # Control task (Hewitt & Liang): re-run on randomly permuted labels. The probe
+    # has capacity to fit some structure even from noise; selectivity = real minus
+    # control accuracy bounds how much of the real accuracy reflects an actual
+    # encoded distinction rather than probe expressiveness. Only computed on request.
+    if selectivity_seed is not None and cross_validation["accuracy_scores"] is not None:
+        shuffled_labels = np.random.default_rng(selectivity_seed).permutation(encoded_labels)
+        control_cv = _adaptive_grouped_cv_accuracy(
+            make_probe(), activations, shuffled_labels, config.seed, groups=pair_ids
+        )
+        if control_cv["accuracy_scores"] is not None:
+            control_accuracy = float(control_cv["accuracy_scores"].mean())
+            result["control_task_accuracy"] = control_accuracy
+            result["selectivity"] = accuracy_mean - control_accuracy
+
     return result
 
 
@@ -526,6 +582,265 @@ def run_knife_mi(
     }
 
 
+# ── Calibrated probe null (replaces magic accuracy thresholds) ───────────────
+
+def probe_beats_null(
+    activations: np.ndarray,
+    labels: list[str],
+    config: Any,
+    pair_ids: list[str] | None = None,
+    n_shuffles: int = 20,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """
+    Decide whether a probe encodes a real distinction by comparing its balanced
+    accuracy against a CALIBRATED null distribution — not a hand-set 0.70 cutoff.
+
+    The null is built by re-running the same probe (same activations, same grouped
+    CV) on randomly permuted labels n_shuffles times. The permutation preserves the
+    class multiset, so the null balanced accuracy centres on chance for THIS
+    geometry and sample size. The real probe counts as encoding the distinction
+    only if its balanced accuracy exceeds the 95th percentile of that null — a
+    control-task test in the Hewitt & Liang sense, with the bar read off the data
+    rather than chosen.
+
+    Returns:
+        Dict with the real balanced accuracy, the null mean / 95th percentile,
+        n_shuffles, and beats_null (bool).
+    """
+    real_result = run_linear_probe(activations, labels, config, pair_ids=pair_ids)
+    real_balanced_accuracy = real_result["balanced_accuracy_mean"]
+
+    rng = np.random.default_rng(seed)
+    null_balanced_accuracies: list[float] = []
+    for _ in range(n_shuffles):
+        shuffled_labels = list(rng.permutation(np.asarray(labels, dtype=object)))
+        shuffled_result = run_linear_probe(activations, shuffled_labels, config, pair_ids=pair_ids)
+        if np.isfinite(shuffled_result["balanced_accuracy_mean"]):
+            null_balanced_accuracies.append(shuffled_result["balanced_accuracy_mean"])
+
+    if not null_balanced_accuracies:
+        return {
+            "balanced_accuracy": real_balanced_accuracy,
+            "null_balanced_p95": float("nan"),
+            "null_balanced_mean": float("nan"),
+            "n_shuffles": 0,
+            "beats_null": False,
+        }
+
+    null_array = np.array(null_balanced_accuracies)
+    null_p95 = float(np.percentile(null_array, 95))
+    return {
+        "balanced_accuracy": float(real_balanced_accuracy),
+        "null_balanced_p95": null_p95,
+        "null_balanced_mean": float(null_array.mean()),
+        "n_shuffles": len(null_balanced_accuracies),
+        "beats_null": bool(np.isfinite(real_balanced_accuracy) and real_balanced_accuracy > null_p95),
+    }
+
+
+# ── Dispersion analysis (T1c: Lewis vs Stalnaker) ────────────────────────────
+
+def _dispersion_measures(activations: np.ndarray) -> dict[str, float]:
+    """
+    Three measures of how spread-out a set of activation vectors is. Used to
+    contrast tie_case against clear_case for T1c: Lewis predicts ties are more
+    dispersed (no unique closest world), Stalnaker predicts ties collapse to a
+    centroid like clear cases.
+
+    All three are reported because a single scalar can be gamed by outliers or by
+    the raw scale of the activations:
+
+      total_variance         — mean squared distance to the class centroid
+                               (= trace of the covariance). Scale-dependent,
+                               outlier-sensitive; the classic but fragile measure.
+      median_pairwise_dist   — median Euclidean distance between item pairs.
+                               Robust to outliers (median, not mean).
+      participation_ratio    — (Σλ)² / Σλ² over the covariance eigenvalues λ.
+                               The *effective dimensionality* of the cloud:
+                               ~1 if the cloud collapses onto a single direction
+                               (Stalnaker centroid), large if it fills many
+                               dimensions (Lewis diffusion). Scale-free.
+    """
+    n_items = activations.shape[0]
+    centroid = activations.mean(axis=0)
+    centered = activations - centroid
+
+    total_variance = float((centered ** 2).sum(axis=1).mean())
+
+    # Singular values of the centered matrix give covariance eigenvalues:
+    # λ_i = s_i² / (n - 1). Participation ratio is invariant to that constant.
+    singular_values = np.linalg.svd(centered, compute_uv=False)
+    eigenvalues = singular_values ** 2
+    sum_eigenvalues = float(eigenvalues.sum())
+    participation_ratio = (
+        float((sum_eigenvalues ** 2) / (eigenvalues ** 2).sum())
+        if sum_eigenvalues > 0 else 0.0
+    )
+
+    # Median pairwise distance over upper-triangle pairs.
+    if n_items > 1:
+        row_index, col_index = np.triu_indices(n_items, k=1)
+        pairwise_distances = np.linalg.norm(activations[row_index] - activations[col_index], axis=1)
+        median_pairwise_dist = float(np.median(pairwise_distances))
+    else:
+        median_pairwise_dist = 0.0
+
+    return {
+        "total_variance": total_variance,
+        "median_pairwise_dist": median_pairwise_dist,
+        "participation_ratio": participation_ratio,
+    }
+
+
+def run_dispersion_analysis(
+    activations: np.ndarray,
+    labels: list[str],
+    label_clear: str = "clear_case",
+    label_tie: str = "tie_case",
+    n_bootstrap: int = 1000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """
+    Lewis vs Stalnaker discriminator for T1c via DISPERSION, not separability.
+
+    A linear probe that separates clear from tie proves only that the two
+    sentence-types differ — true under both theories, so it cannot discriminate
+    them. The theories instead disagree on the GEOMETRY of the tie cloud:
+
+      Lewis     → tie cloud is MORE dispersed than clear (indeterminacy: the
+                  representation spreads over a set of equally-close worlds).
+                  dispersion ratio tie/clear > 1.
+      Stalnaker → tie cloud collapses to a centroid like clear (single world
+                  selected). dispersion ratio ≈ 1.
+
+    To make the ratio fair the two classes must have matched topical diversity —
+    T1c enforces this with minimal pairs (same domain/template, adjective-only
+    difference). Classes are subsampled to equal n here so neither sample size
+    nor imbalance drives the dispersion.
+
+    A bootstrap (resampling items within each class) gives a 95% CI on each
+    ratio. The pre-specified read is threshold-free — the verdict is the CI's
+    position relative to the null ratio = 1:
+      lewis_confirmed     = participation-ratio CI lies entirely above 1.0
+      stalnaker_confirmed = participation-ratio CI brackets 1.0 (cannot reject
+                            equal dispersion)
+      (CI entirely below 1.0 → inconclusive)
+
+    Args:
+        activations: np.ndarray (n_items, hidden_dim) at one layer.
+        labels:      length-n_items condition labels.
+        label_clear: the determinate (control) class name.
+        label_tie:   the indeterminate (test) class name.
+        n_bootstrap: bootstrap resamples for the CI. Default 1000.
+        seed:        RNG seed.
+
+    Returns:
+        Dict with per-class dispersion measures, the tie/clear ratios with 95%
+        CIs, the matched per-class n, and the lewis/stalnaker flags. Returns a
+        "note" and NaN ratios if either class is too small (< 3 items) to have a
+        meaningful covariance.
+    """
+    activations = np.asarray(activations, dtype=np.float64)
+    clear_indices = np.array([i for i, label in enumerate(labels) if label == label_clear])
+    tie_indices = np.array([i for i, label in enumerate(labels) if label == label_tie])
+
+    measure_names = ("total_variance", "median_pairwise_dist", "participation_ratio")
+
+    if len(clear_indices) < 3 or len(tie_indices) < 3:
+        return {
+            "note": (
+                f"Dispersion analysis skipped: need >= 3 items per class, got "
+                f"{len(clear_indices)} {label_clear} and {len(tie_indices)} {label_tie}."
+            ),
+            "n_per_class": int(min(len(clear_indices), len(tie_indices))),
+            "lewis_confirmed": False,
+            "stalnaker_confirmed": False,
+            "dispersion_ratios": {name: float("nan") for name in measure_names},
+        }
+
+    rng = np.random.default_rng(seed)
+
+    # Subsample the larger class so both clouds have equal n — dispersion measures
+    # (especially participation ratio) depend on sample size, so an unequal n
+    # would bias the ratio independently of geometry.
+    matched_n = min(len(clear_indices), len(tie_indices))
+
+    clear_activations_full = activations[clear_indices]
+    tie_activations_full = activations[tie_indices]
+
+    def ratio_for_sample(clear_sample: np.ndarray, tie_sample: np.ndarray) -> dict[str, float]:
+        clear_measures = _dispersion_measures(clear_sample)
+        tie_measures = _dispersion_measures(tie_sample)
+        return {
+            name: (tie_measures[name] / clear_measures[name] if clear_measures[name] > 0 else float("nan"))
+            for name in measure_names
+        }
+
+    # Full-sample per-class measures (matched n, all distinct items) — reported
+    # for transparency. NOT used directly as the point ratio: participation ratio
+    # is sample-size sensitive, and a with-replacement bootstrap collapses
+    # duplicate rows onto fewer effective dimensions, so a full-sample point
+    # estimate can fall outside the bootstrap CI. To keep the point estimate and
+    # its interval on the same footing, the reported point ratio is the bootstrap
+    # MEDIAN and the CI is the 2.5/97.5 percentile of the SAME distribution.
+    point_clear_measures = _dispersion_measures(clear_activations_full)
+    point_tie_measures = _dispersion_measures(tie_activations_full)
+
+    bootstrap_ratios: dict[str, list[float]] = {name: [] for name in measure_names}
+    for _ in range(n_bootstrap):
+        clear_sample = clear_activations_full[rng.choice(len(clear_activations_full), matched_n, replace=True)]
+        tie_sample = tie_activations_full[rng.choice(len(tie_activations_full), matched_n, replace=True)]
+        sample_ratios = ratio_for_sample(clear_sample, tie_sample)
+        for name in measure_names:
+            bootstrap_ratios[name].append(sample_ratios[name])
+
+    point_ratios: dict[str, float] = {}
+    confidence_intervals: dict[str, list[float]] = {}
+    for name in measure_names:
+        finite = np.array([value for value in bootstrap_ratios[name] if np.isfinite(value)])
+        if finite.size:
+            point_ratios[name] = float(np.median(finite))
+            confidence_intervals[name] = [
+                float(np.percentile(finite, 2.5)),
+                float(np.percentile(finite, 97.5)),
+            ]
+        else:
+            point_ratios[name] = float("nan")
+            confidence_intervals[name] = [float("nan"), float("nan")]
+
+    # Threshold-free verdict: the null is "equal dispersion" (ratio = 1). We read
+    # it straight off the bootstrap 95% CI of the ratio — no hand-set constant.
+    #   CI entirely above 1  → tie significantly MORE dispersed → Lewis.
+    #   CI brackets 1         → cannot reject equal dispersion → consistent with
+    #                           Stalnaker (ties collapse to a clear-like centroid).
+    #   CI entirely below 1   → tie LESS dispersed than clear → neither prediction
+    #                           (unexpected) → inconclusive.
+    # The earlier "point < 1.15" was an arbitrary magic number and is removed.
+    participation_ci = confidence_intervals["participation_ratio"]
+    ci_lower, ci_upper = participation_ci[0], participation_ci[1]
+    ci_finite = np.isfinite(ci_lower) and np.isfinite(ci_upper)
+    lewis_confirmed = ci_finite and ci_lower > 1.0
+    stalnaker_confirmed = ci_finite and ci_lower <= 1.0 <= ci_upper
+
+    return {
+        "n_per_class": int(matched_n),
+        "clear_dispersion": point_clear_measures,
+        "tie_dispersion": point_tie_measures,
+        "dispersion_ratios": point_ratios,
+        "dispersion_ratio_ci_95": confidence_intervals,
+        "discriminating_measure": "participation_ratio",
+        "lewis_confirmed": bool(lewis_confirmed),
+        "stalnaker_confirmed": bool(stalnaker_confirmed),
+        "criterion": (
+            "participation-ratio dispersion ratio tie/clear, bootstrap 95% CI vs the "
+            "null ratio = 1. CI entirely > 1 -> Lewis (ties diffuse). CI brackets 1 -> "
+            "consistent with Stalnaker (cannot reject equal dispersion). CI entirely < 1 "
+            "-> inconclusive. No hand-set threshold."
+        ),
+    }
+
+
 def run_identification_probe(
     activations: np.ndarray,
     labels: list[str],
@@ -593,3 +908,79 @@ def run_identification_probe(
     probe_result["adjustable_class"] = "adjustable"
     probe_result["not_adjustable_class"] = "not_adjustable"
     return probe_result
+
+
+def run_partial_mantel_test(
+    model_matrix: np.ndarray,
+    theory_matrix: np.ndarray,
+    covariate_matrix: np.ndarray,
+    n_perms: int = 1000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """
+    Partial Mantel: Spearman association between model and theory RDMs, controlling
+    for a covariate RDM, with a permutation null.
+
+    For T1b: model_matrix = activation similarity; theory_matrix = M_graph (or
+    M_sim); covariate_matrix = M_sim (or M_graph). The partial correlation answers
+    "does the geometry track this theory AFTER removing what the other theory
+    explains?" — the discriminator that survives the Lewis/Pearl truth-convergence.
+
+    Method: rank-transform the three flattened upper triangles (Spearman), linearly
+    residualize model-ranks and theory-ranks on covariate-ranks, correlate the
+    residuals (Pearson). Null: permute model_matrix rows+cols, recompute.
+
+    Args:
+        model_matrix:     (n, n) model pairwise similarity.
+        theory_matrix:    (n, n) theory of interest.
+        covariate_matrix: (n, n) the competing theory, partialled out.
+        n_perms:          permutations for the null. Default 1000.
+        seed:             RNG seed.
+
+    Returns:
+        Dict: partial_r, p_value, significant (p<0.05), null_95th_percentile,
+              exceeds_null_floor (partial_r > null 95th pct), n_perms.
+    """
+    from scipy.stats import rankdata
+
+    n_items = model_matrix.shape[0]
+    upper_row, upper_col = np.triu_indices(n_items, k=1)
+    theory_flat = theory_matrix[upper_row, upper_col]
+    covariate_flat = covariate_matrix[upper_row, upper_col]
+
+    def _residualize(target_values: np.ndarray, predictor_values: np.ndarray) -> np.ndarray:
+        design = np.vstack([np.ones_like(predictor_values), predictor_values]).T
+        beta, _residuals, _rank, _sv = np.linalg.lstsq(design, target_values, rcond=None)
+        return target_values - design @ beta
+
+    def _partial_r(model_flat: np.ndarray) -> float:
+        model_ranks = rankdata(model_flat)
+        theory_ranks = rankdata(theory_flat)
+        covariate_ranks = rankdata(covariate_flat)
+        model_residual = _residualize(model_ranks, covariate_ranks)
+        theory_residual = _residualize(theory_ranks, covariate_ranks)
+        if model_residual.std() == 0 or theory_residual.std() == 0:
+            return 0.0
+        return float(np.corrcoef(model_residual, theory_residual)[0, 1])
+
+    observed_partial_r = _partial_r(model_matrix[upper_row, upper_col])
+
+    rng = np.random.default_rng(seed)
+    null_partial_correlations = []
+    for _ in range(n_perms):
+        permutation_order = rng.permutation(n_items)
+        permuted_model = model_matrix[permutation_order][:, permutation_order]
+        null_partial_correlations.append(_partial_r(permuted_model[upper_row, upper_col]))
+
+    null_partial_correlations = np.array(null_partial_correlations)
+    empirical_p_value = float((null_partial_correlations >= observed_partial_r).mean())
+    null_95th = float(np.percentile(null_partial_correlations, 95))
+
+    return {
+        "partial_r": observed_partial_r,
+        "p_value": empirical_p_value,
+        "significant": empirical_p_value < 0.05,
+        "null_95th_percentile": null_95th,
+        "exceeds_null_floor": observed_partial_r > null_95th,
+        "n_perms": n_perms,
+    }

@@ -15,19 +15,30 @@ forward_causal — both frameworks agree (positive control):
   Both Lewis (closest world where match struck = world where fire ignites)
   and Pearl (do(match_struck=true) → fire ignites) say TRUE.
 
-backtracking — the key Lewis vs Pearl separator:
+backtracking — intended Lewis vs Pearl separator (SEE CONSTRUCT WARNING below):
   "If the fire had ignited, the match must have been struck."
-  Lewis: TRUE — the closest world where fire ignited is one where match was
-         struck. Similarity ordering backtracks through causes.
-  Pearl: FALSE — do(fire_ignited=true) doesn't change the match. You
-         intervened on the effect; the upstream cause is unaffected.
+  Lewis: bans the backtracking reading via asymmetry-of-similarity weighting.
+  Pearl: distinguishes the *interventional* do(fire) (which leaves the match) from
+         the *counterfactual* (whose abduction step infers the match WAS struck).
 
 common_cause — Pearl's canonical confound (barometer/storm domain):
   "If the barometer had not fallen, the storm would not have arrived."
-  Lewis: TRUE — closest world where barometer stays high = world where
-         atmospheric pressure is normal = no storm. Backtracks to common cause.
-  Pearl: FALSE — do(barometer=not_fallen) doesn't affect atmospheric pressure.
-         Storm still arrives. Barometer does not cause storm.
+  Pearl: do(barometer=steady) does not change atmospheric pressure → storm still
+         arrives → the counterfactual is FALSE. Canonical confound, correct.
+  Lewis: under standard miracle-weighting Lewis AGREES — hold the past fixed,
+         small miracle on the barometer, pressure and storm unchanged → also FALSE.
+
+─── CONSTRUCT WARNING (added after expert review) ─────────────────────────────
+Two theoretical defects mean the conditions below may NOT cleanly separate Lewis
+from Pearl, and the experiment must be read as provisional:
+  1. "Pearl makes backtracking FALSE" is a do()-vs-counterfactual category error.
+     Pearl's abduction step also makes the backtracking counterfactual TRUE, so a
+     probe separating forward from backtracking may be reading thematic role
+     (cause-noun vs effect-noun in the antecedent), not the framework.
+  2. Standard Lewis (miracle-weighting) agrees with Pearl on the common_cause case
+     (storm still arrives), so that contrast is likely a non-divergence.
+A faithful separator probably needs an explicit interventional (do) framing, not
+the indicative/subjunctive conditionals here. Reframe before trusting a verdict.
 
 ─── CONCEPT: Geometric predictions ───────────────────────────────────────────
 If model implements Lewis:
@@ -78,7 +89,7 @@ _EFFECT_PAST_STATE: dict[str, str] = {
     "rain_ground":     "flooded",       # "been wet" (2w) → "flooded" (1w): matches cause_verb_past "fallen" (1w)
     "drug_recovery":   "recovered",
     "fertilizer_crop": "grown",
-    "switch_light":    "lit",           # "turned on" (2w) → "lit" (1w): matches cause_verb_past "flipped" (1w)
+    "switch_light":    "shone",         # "turned on" (2w) → "shone" (1w): matches cause_verb_past "flipped" (1w); intransitive-grammatical, unlike "lit"
     "watering_plant":  "grown",
     "study_exam":      "passed",        # "passed the exam" (3w) → "passed" (1w): matches cause_verb_past "done" (1w)
     "exercise_fitness":"improved",

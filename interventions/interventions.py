@@ -140,12 +140,11 @@ def patch_activation(
             torch.tensor(baseline_logits, dtype=torch.float32).to(model_device), dim=-1
         )
         patched_log_probs = torch.log_softmax(final_token_logits, dim=-1)
-        kl_from_baseline = torch.nn.functional.kl_div(
-            baseline_log_probs,
-            patched_log_probs,
-            reduction="sum",
-            log_target=True,
-        ).item()
+        # KL(patched || baseline) = Σ p_patched · (log p_patched − log p_baseline).
+        # Written explicitly rather than via F.kl_div(input, target) whose argument
+        # order silently determines the direction and is easy to invert in a later edit.
+        patched_probs = patched_log_probs.exp()
+        kl_from_baseline = float((patched_probs * (patched_log_probs - baseline_log_probs)).sum().item())
 
     return {
         "logits": final_token_logits.tolist(),
@@ -255,59 +254,185 @@ def run_layer_sweep(
     }
 
 
+# ── Multi-target sweep + norm-matched control (review-grade patching) ─────────
+
+def run_layer_sweep_multi_target(
+    source_activation_by_layer: dict[int, np.ndarray],
+    target_sentences: list[str],
+    layer_range: tuple[int, int],
+    component: str,
+    token_position: int,
+    model: Any,
+    n_bootstrap: int = 1000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """
+    Layer sweep averaged over MANY target sentences, with a bootstrap CI per layer.
+
+    Patching a single target (the old run_layer_sweep) gives an n=1 effect size:
+    activation-patching KL is high-variance across prompts, so one sentence's peak
+    layer is not generalizable. Here every target in target_sentences is patched at
+    every layer; the reported per-layer effect is the mean KL across targets, with a
+    95% bootstrap CI over targets. peak_layer is read off the mean curve.
+
+    Args:
+        source_activation_by_layer: layer → source activation vector (e.g. class mean).
+        target_sentences:           the held-out targets to patch into (n >= 1).
+        layer_range:                (start, end) inclusive.
+        component, token_position, model: as patch_activation.
+        n_bootstrap:                resamples over targets for the CI.
+        seed:                       RNG seed.
+
+    Returns:
+        Dict with per-layer mean KL, 95% CI, peak_layer (from the mean curve),
+        peak_layer_ci, per-target raw KL matrix, and n_targets.
+    """
+    layers = list(range(layer_range[0], layer_range[1] + 1))
+
+    # baseline per target (unpatched), then KL at each layer for each target.
+    per_target_kl: dict[str, dict[int, float]] = {}
+    for target_sentence in target_sentences:
+        with torch.no_grad():
+            baseline_logits = model(target_sentence)[0, -1, :].tolist()
+        target_run_config = {"stimulus": target_sentence}
+        per_target_kl[target_sentence] = {
+            layer_index: patch_activation(
+                source_activation_by_layer[layer_index], target_run_config,
+                layer_index, component, token_position, model,
+                baseline_logits=baseline_logits,
+            )["kl_from_baseline"]
+            for layer_index in layers
+        }
+
+    kl_matrix = np.array([[per_target_kl[t][layer] for layer in layers] for t in target_sentences])  # (n_targets, n_layers)
+    mean_kl_by_layer = {layer: float(kl_matrix[:, j].mean()) for j, layer in enumerate(layers)}
+
+    rng = np.random.default_rng(seed)
+    n_targets = kl_matrix.shape[0]
+    bootstrap_peak_layers: list[int] = []
+    ci_by_layer: dict[int, list[float]] = {}
+    boot_means = np.empty((n_bootstrap, len(layers)))
+    for b in range(n_bootstrap):
+        resample = rng.choice(n_targets, n_targets, replace=True)
+        boot_means[b] = kl_matrix[resample].mean(axis=0)
+        bootstrap_peak_layers.append(layers[int(np.argmax(boot_means[b]))])
+    for j, layer in enumerate(layers):
+        ci_by_layer[layer] = [float(np.percentile(boot_means[:, j], 2.5)),
+                              float(np.percentile(boot_means[:, j], 97.5))]
+
+    peak_layer = max(mean_kl_by_layer, key=lambda layer_idx: mean_kl_by_layer[layer_idx])
+    peak_layer_ci = [int(np.percentile(bootstrap_peak_layers, 2.5)),
+                     int(np.percentile(bootstrap_peak_layers, 97.5))]
+
+    return {
+        "mean_kl_by_layer": mean_kl_by_layer,
+        "kl_ci_95_by_layer": ci_by_layer,
+        "peak_layer": peak_layer,
+        "peak_layer_ci_95": peak_layer_ci,
+        "n_targets": int(n_targets),
+        "component": component,
+        "token_position": token_position,
+    }
+
+
+def norm_matched_control_kl(
+    reference_activation: np.ndarray,
+    target_sentences: list[str],
+    layer: int,
+    component: str,
+    token_position: int,
+    model: Any,
+    n_random_directions: int = 8,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """
+    Specificity control: patch RANDOM directions of the SAME NORM as the source
+    activation, averaged over targets and directions.
+
+    The old control compared the class-mean patch against the grand-mean (mean
+    ablation). Both are mean vectors differing mostly in norm, so the ratio could
+    pass or fail for scale reasons unrelated to the construct. A norm-matched
+    random patch isolates DIRECTION: if the real (class-mean) patch shifts the
+    output much more than a random vector of equal norm, the effect is specific to
+    the encoded direction, not to perturbation magnitude.
+
+    Returns:
+        Dict with mean control KL (across targets × random directions) and its std.
+    """
+    rng = np.random.default_rng(seed)
+    reference_norm = float(np.linalg.norm(reference_activation))
+    dimensionality = reference_activation.shape[0]
+
+    control_kls: list[float] = []
+    for target_sentence in target_sentences:
+        with torch.no_grad():
+            baseline_logits = model(target_sentence)[0, -1, :].tolist()
+        target_run_config = {"stimulus": target_sentence}
+        for _ in range(n_random_directions):
+            random_direction = rng.standard_normal(dimensionality)
+            random_direction = random_direction / np.linalg.norm(random_direction) * reference_norm
+            control_kls.append(
+                patch_activation(
+                    random_direction, target_run_config, layer, component,
+                    token_position, model, baseline_logits=baseline_logits,
+                )["kl_from_baseline"]
+            )
+
+    control_kls_array = np.array(control_kls)
+    return {
+        "mean_control_kl": float(control_kls_array.mean()),
+        "std_control_kl": float(control_kls_array.std()),
+        # 95th percentile of the empirical control-KL distribution: the calibrated
+        # bar a specific patch must clear to count as direction-specific. Replaces
+        # the old hand-set min_ratio constant.
+        "control_kl_p95": float(np.percentile(control_kls_array, 95)),
+        "n_samples": int(control_kls_array.size),
+        "reference_norm": reference_norm,
+    }
+
+
 # ── Specificity enforcement ───────────────────────────────────────────────────
 
 def assert_specificity_valid(
     specific_patch_kl: float,
-    mean_ablation_kl: float,
+    control_kl_threshold: float,
     layer: int,
-    min_ratio: float = 1.5,
 ) -> None:
     """
-    [INVARIANT V2] Assert that the specific patch effect is meaningfully larger
-    than the mean-ablation effect at the same layer.
+    [INVARIANT V2] Assert the specific patch effect exceeds the CALIBRATED control
+    bar at the same layer.
 
-    Both arguments are KL divergences from the clean (unpatched) baseline output
-    distribution. KL(specific_patch || baseline) measures how much the targeted
-    intervention shifts the output. KL(mean_ablation || baseline) measures how
-    much simply replacing the activation with the dataset mean shifts the output.
+    control_kl_threshold is the 95th percentile of the norm-matched random-direction
+    control KL distribution (norm_matched_control_kl → "control_kl_p95"). A specific
+    (class-mean) patch must shift the output more than 95% of equal-norm random
+    perturbations do; otherwise the effect is attributable to perturbation magnitude,
+    not to the encoded direction, and the mechanistic claim is unsupported.
 
-    If the two are similar, the effect is not specific to the philosophical
-    distinction — any change to that layer's activation would shift the output
-    by roughly the same amount. The result would not support a mechanistic claim.
-
-    This is called in the write path for every patch result. If it fails,
-    the result is not written and a ValueError is raised.
+    This replaces the earlier fixed-ratio test (specific_kl / mean_ablation_kl >
+    1.5), which both used an arbitrary constant and compared against the grand-mean
+    rather than a norm-matched control. The bar is now read off the empirical control
+    distribution — no hand-set threshold.
 
     Args:
-        specific_patch_kl:  KL(specific_patch || baseline). From patch_activation
-                            with baseline_logits provided.
-        mean_ablation_kl:   KL(mean_ablation || baseline). From mean_ablate
-                            with baseline_logits provided.
-        layer:              Which layer was patched. Used in the error message.
-        min_ratio:          specific_patch_kl / mean_ablation_kl must exceed this.
-                            Default 1.5 — specific patch must shift output 50% more
-                            than mean ablation to claim specificity.
+        specific_patch_kl:    KL(specific_patch || baseline) at the peak layer.
+        control_kl_threshold: 95th-percentile control KL from norm_matched_control_kl.
+        layer:                Which layer was patched. Used in the error message.
 
     Raises:
-        ValueError: if the specificity ratio < min_ratio.
+        ValueError: if specific_patch_kl <= control_kl_threshold.
     """
-    if mean_ablation_kl < 1e-8:
-        # Mean ablation had essentially no effect — the activation at this layer
-        # carries no information about the output. Specific patching may still be
-        # meaningful, but we can't compute a ratio. Pass through.
+    if control_kl_threshold < 1e-8:
+        # Random patches at this layer had essentially no effect, so any specific
+        # effect clears the bar trivially; nothing to assert against. Pass through.
         return
 
-    specificity_ratio = specific_patch_kl / mean_ablation_kl
-
-    if specificity_ratio < min_ratio:
+    if specific_patch_kl <= control_kl_threshold:
         raise ValueError(
             f"Specificity check failed at layer {layer} (V2). "
-            f"KL(specific_patch || baseline)={specific_patch_kl:.4f}, "
-            f"KL(mean_ablation || baseline)={mean_ablation_kl:.4f}, "
-            f"ratio={specificity_ratio:.3f} < required {min_ratio}. "
-            f"The patching effect is not specific to the philosophical distinction — "
-            f"any activation change at this layer shifts output by roughly the same amount."
+            f"KL(specific_patch || baseline)={specific_patch_kl:.4f} does not exceed the "
+            f"95th-percentile norm-matched control KL={control_kl_threshold:.4f}. "
+            f"The patch shifts the output no more than an equal-norm random direction — "
+            f"the effect is magnitude, not the encoded distinction."
         )
 
 

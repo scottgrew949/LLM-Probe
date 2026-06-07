@@ -677,12 +677,13 @@ class TestCounterfactualMechanismGrammar:
 from stimuli.grammars.t1c import generate as generate_near_miss_pairs
 from stimuli.grammars.t1c import generate_behavioral_items as near_miss_behavioral_items
 
+# Lewis/Stalnaker is a dispersion test over minimal pairs: clear_case (determinate,
+# asymmetric adjective) vs tie_case (indeterminate, symmetric adjective) share a
+# domain and differ by one word; near_miss is a separate symmetric just-below /
+# just-above condition.
 VALID_NEAR_MISS_LABEL_PAIRS = {
-    ("clear_case", "clear_case"),
-    ("tie_case", "tie_case"),
     ("clear_case", "tie_case"),
     ("near_miss", "near_miss"),
-    ("clear_case", "near_miss"),
 }
 
 class TestNearMissGrammar:
@@ -703,9 +704,29 @@ class TestNearMissGrammar:
             assert (stimulus_pair["label_a"], stimulus_pair["label_b"]) in VALID_NEAR_MISS_LABEL_PAIRS
 
     def test_generate_all_three_condition_labels_present(self):
-        pairs = generate_near_miss_pairs(100)
+        pairs = generate_near_miss_pairs(150)
         labels_found = {stimulus_pair["label_a"] for stimulus_pair in pairs}
+        labels_found |= {stimulus_pair["label_b"] for stimulus_pair in pairs}
         assert {"clear_case", "tie_case", "near_miss"}.issubset(labels_found)
+
+    def test_clear_and_tie_counts_balanced(self):
+        # Dispersion ratio requires matched-size clouds: every clear/tie minimal
+        # pair contributes exactly one clear and one tie sentence.
+        pairs = generate_near_miss_pairs(150)
+        clear_count = sum(1 for p in pairs if p["label_a"] == "clear_case")
+        tie_count = sum(1 for p in pairs if p["label_b"] == "tie_case")
+        assert clear_count == tie_count == 125
+
+    def test_clear_tie_pairs_are_minimal(self):
+        # clear vs tie must differ in exactly one whitespace token (the adjective)
+        # so topic/length cannot confound the dispersion comparison.
+        for stimulus_pair in generate_near_miss_pairs(150):
+            if stimulus_pair["label_a"] == "clear_case" and stimulus_pair["label_b"] == "tie_case":
+                words_a = stimulus_pair["sentence_a"].split()
+                words_b = stimulus_pair["sentence_b"].split()
+                assert len(words_a) == len(words_b)
+                differing = [i for i in range(len(words_a)) if words_a[i] != words_b[i]]
+                assert len(differing) == 1
 
     def test_generate_pair_ids_sequential(self):
         pairs = generate_near_miss_pairs(10)
@@ -725,8 +746,8 @@ class TestNearMissGrammar:
         assert order_a != order_b
 
     def test_generate_exceeds_max_raises(self):
-        with pytest.raises(ValueError, match="200"):
-            generate_near_miss_pairs(201)
+        with pytest.raises(ValueError, match="150"):
+            generate_near_miss_pairs(151)
 
     def test_generate_sentences_nonempty(self):
         for stimulus_pair in generate_near_miss_pairs(10):
@@ -742,6 +763,80 @@ class TestNearMissGrammar:
 
     def test_behavioral_items_correct_field_valid(self):
         for item in near_miss_behavioral_items():
+            assert item["correct"] in ("a", "b")
+
+
+# ── stimuli/grammars/t1d.py (rebuilt: minimal pairs, no verdict leakage) ──────
+
+from stimuli.grammars.t1d import generate as generate_identification_pairs
+from stimuli.grammars.t1d import generate_behavioral_items as identification_behavioral_items
+
+VALID_IDENTIFICATION_LABEL_PAIRS = {
+    ("back_door_adjustable", "confounded_not_adjustable"),
+    ("front_door_adjustable", "unconfounded_control"),
+}
+
+# Verdict words the OLD grammar leaked into the stimuli, turning the probe into a
+# keyword detector. The rebuilt grammar must contain none of them.
+_FORBIDDEN_VERDICT_WORDS = [
+    "valid", "cannot", "unestimable", "estimable", "identifiable", "identified",
+    "adjustment", "do(x)", "back-door criterion", "not answerable",
+]
+
+class TestCausalIdentificationGrammar:
+
+    def test_generate_returns_correct_count(self):
+        assert len(generate_identification_pairs(40)) == 40
+
+    def test_generate_thread_id_is_t1d(self):
+        for stimulus_pair in generate_identification_pairs(10):
+            assert stimulus_pair["thread_id"] == "t1d"
+
+    def test_generate_label_pairs_valid(self):
+        for stimulus_pair in generate_identification_pairs(60):
+            assert (stimulus_pair["label_a"], stimulus_pair["label_b"]) in VALID_IDENTIFICATION_LABEL_PAIRS
+
+    def test_back_door_and_confounded_counts_balanced(self):
+        pairs = generate_identification_pairs(120)
+        back = sum(1 for p in pairs if p["label_a"] == "back_door_adjustable")
+        conf = sum(1 for p in pairs if p["label_b"] == "confounded_not_adjustable")
+        assert back == conf == 60
+
+    def test_back_door_confounded_pairs_are_minimal(self):
+        # The only difference between identified and not-identified must be the
+        # observed/hidden confounder cue — exactly what flips identifiability.
+        for stimulus_pair in generate_identification_pairs(120):
+            if stimulus_pair["label_a"] == "back_door_adjustable":
+                words_a = stimulus_pair["sentence_a"].split()
+                words_b = stimulus_pair["sentence_b"].split()
+                assert len(words_a) == len(words_b)
+                differing = [i for i in range(len(words_a)) if words_a[i] != words_b[i]]
+                assert len(differing) == 1
+
+    def test_no_verdict_words_leak_into_stimuli(self):
+        pairs = generate_identification_pairs(120)
+        for stimulus_pair in pairs:
+            text = (stimulus_pair["sentence_a"] + " " + stimulus_pair["sentence_b"]).lower()
+            for forbidden in _FORBIDDEN_VERDICT_WORDS:
+                assert forbidden not in text, f"verdict word '{forbidden}' leaked: {text}"
+
+    def test_generate_pair_ids_sequential(self):
+        pairs = generate_identification_pairs(10)
+        for index, stimulus_pair in enumerate(pairs):
+            assert stimulus_pair["pair_id"] == f"t1d_{index + 1:04d}"
+
+    def test_generate_reproducible_with_same_seed(self):
+        assert generate_identification_pairs(40, seed=5) == generate_identification_pairs(40, seed=5)
+
+    def test_generate_exceeds_max_raises(self):
+        with pytest.raises(ValueError, match="120"):
+            generate_identification_pairs(121)
+
+    def test_behavioral_items_count(self):
+        assert len(identification_behavioral_items()) == 4
+
+    def test_behavioral_items_correct_field_valid(self):
+        for item in identification_behavioral_items():
             assert item["correct"] in ("a", "b")
 
 
@@ -1009,3 +1104,265 @@ class TestGeneratePairsNoDuplicates:
         pairs = generate_pairs(grammar_file=grammar, n=5, thread_id="jsontest")
         assert len(pairs) == 2  # not padded up to 5
         assert len({stimulus_pair["pair_id"] for stimulus_pair in pairs}) == 2
+
+
+# ── Pythia replication: invariant gates must not be bypassed by the suffix ──────
+
+def _lockable_config(**overrides) -> ExperimentConfig:
+    """A config that passes lock() with no real stimulus file on disk."""
+    fields = dict(
+        experiment_id="test_run",
+        thread_id="t2",
+        model_id="EleutherAI/pythia-1.4b",
+        model_revision="main",
+        layer_range=(0, 4),
+        component="resid_post",
+        token_positions=[-1],
+        probe_type="linear",
+        expected_outcomes={"k": "v"},
+        frequency_match_verified=True,
+        stimulus_file="",            # empty → lock() skips existence check
+        stimulus_sha256="deadbeef",  # non-empty → passes V12 sha check
+    )
+    fields.update(overrides)
+    return ExperimentConfig(**fields)
+
+
+class TestPythiaThreadIdInvariants:
+    """
+    Regression: thread-specific invariant gates key on the BASE thread id, so a
+    '_pythia' replication thread cannot silently bypass V5/V10/V14/V15. This is
+    the bug that let t1b_pythia run without the T1a-level3 prerequisite and
+    t1d_pythia lock without identification_criterion/confounder_structure.
+    """
+
+    # --- lock(): V14 / V15 enforced for t1d_pythia exactly as for t1d ---
+
+    def test_t1d_pythia_lock_requires_identification_criterion(self):
+        config = _lockable_config(thread_id="t1d_pythia", confounder_structure={"nodes": []})
+        with pytest.raises(ValueError, match="V14"):
+            config.lock()
+
+    def test_t1d_pythia_lock_requires_confounder_structure(self):
+        config = _lockable_config(thread_id="t1d_pythia", identification_criterion="back_door")
+        with pytest.raises(ValueError, match="V15"):
+            config.lock()
+
+    def test_t1d_pythia_lock_succeeds_when_both_set(self):
+        config = _lockable_config(
+            thread_id="t1d_pythia",
+            identification_criterion="back_door",
+            confounder_structure={"nodes": [], "edges": []},
+        )
+        config.lock()
+        assert config.pre_spec_locked is True
+
+    def test_t2c_pythia_lock_requires_intension_type(self):
+        # Defensive: the same base-id normalization must hold for t2c when a
+        # replication thread is added later.
+        config = _lockable_config(thread_id="t2c")
+        with pytest.raises(ValueError, match="V17"):
+            config.lock()
+
+    # --- check_phase_gate(): V10 (T1a level3) enforced for t1b_pythia ---
+
+    def _seed_gate_files(self, root: Path, thread_id: str) -> None:
+        """Write the V8/V11 prerequisites so the gate reaches the V10 check."""
+        results = root / "experiments" / thread_id / "results"
+        results.mkdir(parents=True, exist_ok=True)
+        save_result({"passed": True, "accuracy": 0.9}, results / "behavioral_gate.json")
+        save_result({"surface_classifier_accuracy": 0.5}, results / "surface_null.json")
+
+    def _seed_prerequisite(self, root: Path, prereq_id: str, level3: bool) -> None:
+        results = root / "experiments" / prereq_id / "results"
+        results.mkdir(parents=True, exist_ok=True)
+        save_result({"level3_confirmed": level3}, results / "summary.json")
+
+    def test_t1b_pythia_gate_blocks_when_prereq_level3_false(self, tmp_path, monkeypatch):
+        import experiments.run as run_module
+        monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
+
+        self._seed_gate_files(tmp_path, "t1b_pythia")
+        self._seed_prerequisite(tmp_path, "t1a_pythia", level3=False)
+
+        config = _lockable_config(
+            thread_id="t1b_pythia",
+            prerequisite_experiment_id="t1a_pythia",
+        )
+        config.lock()
+        with pytest.raises(ValueError, match="V10"):
+            run_module.check_phase_gate(config)
+
+    def test_t1b_pythia_gate_passes_when_prereq_level3_true(self, tmp_path, monkeypatch):
+        import experiments.run as run_module
+        monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
+
+        self._seed_gate_files(tmp_path, "t1b_pythia")
+        self._seed_prerequisite(tmp_path, "t1a_pythia", level3=True)
+
+        config = _lockable_config(
+            thread_id="t1b_pythia",
+            prerequisite_experiment_id="t1a_pythia",
+        )
+        config.lock()
+        run_module.check_phase_gate(config)  # must not raise
+
+    def test_t1b_pythia_gate_requires_prerequisite_id(self, tmp_path, monkeypatch):
+        import experiments.run as run_module
+        monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
+
+        self._seed_gate_files(tmp_path, "t1b_pythia")
+        config = _lockable_config(thread_id="t1b_pythia", prerequisite_experiment_id=None)
+        config.lock()
+        with pytest.raises(ValueError, match="V10"):
+            run_module.check_phase_gate(config)
+
+    def test_t1d_pythia_gate_enforces_v14(self, tmp_path, monkeypatch):
+        import experiments.run as run_module
+        monkeypatch.setattr(run_module, "PROJECT_ROOT", tmp_path)
+
+        self._seed_gate_files(tmp_path, "t1d_pythia")
+        # T1d gate also checks the T1b prerequisite summary exists if prereq id set.
+        config = _lockable_config(
+            thread_id="t1d_pythia",
+            identification_criterion=None,
+            confounder_structure={"nodes": []},
+            prerequisite_experiment_id=None,
+        )
+        # lock() would block V14 first, so bypass lock for this gate-only check.
+        config.pre_spec_locked = True
+        with pytest.raises(ValueError, match="V14"):
+            run_module.check_phase_gate(config)
+
+
+class TestBaseThreadSingleSource:
+    """
+    The variant->base mapping lives in exactly one place (base_thread_of), and
+    valid_thread_ids is derived from BASE_THREAD_IDS x MODEL_VARIANT_SUFFIXES.
+    These tests lock that contract so a future suffix (e.g. '_llama') needs only
+    one registry edit, not scattered string logic.
+    """
+
+    def test_base_thread_of_strips_known_suffix(self):
+        from experiments.config import base_thread_of
+        assert base_thread_of("t1b_pythia") == "t1b"
+        assert base_thread_of("t2c_pythia") == "t2c"
+
+    def test_base_thread_of_leaves_base_unchanged(self):
+        from experiments.config import base_thread_of
+        assert base_thread_of("t1b") == "t1b"
+        assert base_thread_of("t4") == "t4"
+
+    def test_valid_thread_ids_is_cross_product(self):
+        from experiments.config import (
+            valid_thread_ids, BASE_THREAD_IDS, MODEL_VARIANT_SUFFIXES,
+        )
+        accepted = valid_thread_ids()
+        for base_id in BASE_THREAD_IDS:
+            assert base_id in accepted
+            for variant_suffix in MODEL_VARIANT_SUFFIXES:
+                assert base_id + variant_suffix in accepted
+
+    def test_typo_variant_rejected_at_construction(self):
+        with pytest.raises(ValueError, match="not valid"):
+            _make_config(thread_id="t1z_pythia")
+
+    def test_config_base_thread_property_matches_helper(self):
+        from experiments.config import base_thread_of
+        config = _make_config(thread_id="t1d")  # avoid t1d-specific lock fields here
+        assert config.base_thread == base_thread_of(config.thread_id)
+
+
+class TestT1bMatrices:
+    """M_graph clusters by structure, M_sim by domain; factorial cross => decorrelated."""
+
+    def _factorial_labels(self):
+        # 4 structures x 5 domains, 2 sentences per cell = 40 labels, balanced
+        structures = ["chain", "fork", "direct", "collider"]
+        domains = ["weather", "medicine", "mechanical", "plant", "finance"]
+        labels = []
+        for s in structures:
+            for d in domains:
+                labels += [f"{s}|{d}", f"{s}|{d}"]
+        return labels
+
+    def test_graph_matrix_is_one_for_same_structure(self):
+        from stimuli.theoretical_matrices.t1b_matrices import build_graph_similarity_matrix
+        labels = self._factorial_labels()
+        m = build_graph_similarity_matrix(labels)
+        assert m.shape == (len(labels), len(labels))
+        # same structure, different domain -> 1.0
+        i = labels.index("chain|weather")
+        j = labels.index("chain|medicine")
+        assert m[i, j] == 1.0
+        # different structure -> 0.0
+        k = labels.index("fork|weather")
+        assert m[i, k] == 0.0
+
+    def test_domain_matrix_is_one_for_same_domain(self):
+        from stimuli.theoretical_matrices.t1b_matrices import build_domain_similarity_matrix
+        labels = self._factorial_labels()
+        m = build_domain_similarity_matrix(labels)
+        i = labels.index("chain|weather")
+        j = labels.index("fork|weather")  # same domain, diff structure
+        assert m[i, j] == 1.0
+        k = labels.index("chain|medicine")
+        assert m[i, k] == 0.0
+
+    def test_balanced_factorial_is_decorrelated(self):
+        from stimuli.theoretical_matrices.t1b_matrices import (
+            build_graph_similarity_matrix, build_domain_similarity_matrix,
+            corr_between_matrices, assert_matrices_decorrelated,
+        )
+        labels = self._factorial_labels()
+        mg = build_graph_similarity_matrix(labels)
+        md = build_domain_similarity_matrix(labels)
+        c = corr_between_matrices(mg, md)
+        assert abs(c) < 0.2
+        # should not raise
+        assert_matrices_decorrelated(mg, md)
+
+    def test_collinear_matrices_raise(self):
+        from stimuli.theoretical_matrices.t1b_matrices import assert_matrices_decorrelated
+        # identical matrices -> corr 1.0 -> must raise (V23)
+        m = np.array([[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        with pytest.raises(ValueError, match="V23"):
+            assert_matrices_decorrelated(m, m)
+
+
+class TestPartialMantel:
+    """Partial Mantel attributes model geometry to one matrix net of a covariate."""
+
+    def test_partial_r_drops_when_signal_is_the_covariate(self):
+        from probes.probes import run_partial_mantel_test
+        rng = np.random.default_rng(0)
+        n = 30
+        covariate = rng.random((n, n)); covariate = (covariate + covariate.T) / 2
+        # model tracks the covariate, NOT the theory
+        model = covariate + 0.01 * rng.random((n, n))
+        theory = rng.random((n, n)); theory = (theory + theory.T) / 2
+        result = run_partial_mantel_test(model, theory, covariate, n_perms=200, seed=1)
+        # partialling out the covariate, model has ~no residual link to theory
+        assert abs(result["partial_r"]) < 0.3
+        assert result["significant"] is False
+
+    def test_partial_r_survives_when_signal_is_the_theory(self):
+        from probes.probes import run_partial_mantel_test
+        rng = np.random.default_rng(2)
+        n = 30
+        theory = rng.random((n, n)); theory = (theory + theory.T) / 2
+        covariate = rng.random((n, n)); covariate = (covariate + covariate.T) / 2
+        model = theory + 0.01 * rng.random((n, n))  # model tracks theory
+        result = run_partial_mantel_test(model, theory, covariate, n_perms=200, seed=3)
+        assert result["partial_r"] > 0.5
+        assert result["significant"] is True
+
+    def test_result_keys(self):
+        from probes.probes import run_partial_mantel_test
+        rng = np.random.default_rng(4)
+        n = 12
+        a = rng.random((n, n))
+        result = run_partial_mantel_test(a, a, a, n_perms=50, seed=5)
+        for key in ("partial_r", "p_value", "significant", "null_95th_percentile",
+                    "exceeds_null_floor", "n_perms"):
+            assert key in result

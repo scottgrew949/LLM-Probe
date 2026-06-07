@@ -35,6 +35,66 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+# ─── CONCEPT: thread identity is two things, not one ──────────────────────────
+# A thread_id like "t1b_pythia" carries TWO distinct meanings that used to be
+# tangled together:
+#   (1) run identity   — where results are written (experiments/t1b_pythia/...),
+#                        so a Pythia replication never overwrites the GPT-2 run.
+#   (2) thread identity — WHICH philosophical thread this is, and therefore which
+#                        per-thread invariants apply (V5/V10 for t1b, V14/V15 for
+#                        t1d, V17 for t2c, ...).
+# Keying the invariant checks on the raw thread_id silently exempts every
+# replication variant from its own gates — a "_pythia" suffix would bypass V5,
+# V10, V14, V15. The holistic fix is to make meaning (2) a single derived value,
+# base_thread_of(), used by every invariant check, while the raw thread_id keeps
+# meaning (1). Adding a new architecture (Llama, ...) is then one entry in
+# MODEL_VARIANT_SUFFIXES — not a scattered string edit in every gate.
+
+BASE_THREAD_IDS: frozenset[str] = frozenset({
+    "t1", "t1a", "t1b", "t1c", "t1d",
+    "t2", "t2b", "t2c",
+    "t3", "t4", "t5", "t6",
+})
+"""The philosophical threads. A run's invariants are determined by which of these
+its thread_id reduces to."""
+
+MODEL_VARIANT_SUFFIXES: tuple[str, ...] = ("_gpt2", "_pythia")
+"""Per-model run suffixes appended to a base thread_id so each model's run lands
+in its own results directory (e.g. 't1a_gpt2', 't1a_pythia'). The bare base id
+('t1a') is a logical key only — stimuli + invariants — never a run directory.
+Extend here (e.g. '_llama') when a new model is added; nothing else changes."""
+
+
+def base_thread_of(thread_id: str) -> str:
+    """
+    Reduce a run's thread_id to its philosophical thread identity.
+
+    Strips a single registered model-variant suffix, so 't1b_pythia' → 't1b'
+    while 't1b' is returned unchanged. This is the ONE place that knows how a
+    replication variant maps back to its base thread; every invariant check and
+    the validation pipeline call here rather than re-deriving it locally.
+    """
+    for variant_suffix in MODEL_VARIANT_SUFFIXES:
+        if thread_id.endswith(variant_suffix):
+            return thread_id[: -len(variant_suffix)]
+    return thread_id
+
+
+def valid_thread_ids() -> frozenset[str]:
+    """
+    Every accepted thread_id: each base thread plus each base+variant combination.
+
+    Derived from BASE_THREAD_IDS × MODEL_VARIANT_SUFFIXES so a typo'd variant
+    ('t1z_pythia') is rejected rather than silently treated as an unknown base.
+    """
+    variant_ids = {
+        base_id + variant_suffix
+        for base_id in BASE_THREAD_IDS
+        for variant_suffix in MODEL_VARIANT_SUFFIXES
+    }
+    return frozenset(BASE_THREAD_IDS | variant_ids)
+
+
 @dataclass
 class ExperimentConfig:
     """
@@ -233,16 +293,23 @@ class ExperimentConfig:
     run_timestamp: str = ""
     """ISO 8601 timestamp. Set automatically by run_experiment() at start."""
 
+    @property
+    def base_thread(self) -> str:
+        """
+        The philosophical thread this run belongs to (run-variant suffix stripped).
+
+        thread_id is run identity ('t1b_pythia' → its own results directory);
+        base_thread is thread identity ('t1b' → its invariants). All per-thread
+        invariant checks key on this so a replication variant cannot bypass them.
+        """
+        return base_thread_of(self.thread_id)
+
     def __post_init__(self) -> None:
-        valid_thread_ids = {
-            "t1", "t1a", "t1b", "t1c", "t1d",
-            "t2", "t2b", "t2c",
-            "t3", "t4", "t5", "t6",
-        }
-        if self.thread_id not in valid_thread_ids:
+        accepted_thread_ids = valid_thread_ids()
+        if self.thread_id not in accepted_thread_ids:
             raise ValueError(
                 f"thread_id='{self.thread_id}' is not valid. "
-                f"Must be one of: {sorted(valid_thread_ids)}"
+                f"Must be one of: {sorted(accepted_thread_ids)}"
             )
 
         # V6: behavioral gate floor — config cannot lower it
@@ -326,22 +393,25 @@ class ExperimentConfig:
                 "stimulus_sha256 is empty. Compute SHA256 of stimulus file and set it before locking."
             )
 
+        # Per-thread lock invariants key on base_thread, so a replication variant
+        # ("t1d_pythia") enforces V14/V15/V17 exactly as its base thread does.
+
         # V14: T1d requires identification_criterion
-        if self.thread_id == "t1d" and self.identification_criterion is None:
+        if self.base_thread == "t1d" and self.identification_criterion is None:
             raise ValueError(
                 "identification_criterion is None (V14). "
                 "Set to 'back_door' or 'front_door' before locking T1d config."
             )
 
         # V15: T1d requires confounder_structure
-        if self.thread_id == "t1d" and self.confounder_structure is None:
+        if self.base_thread == "t1d" and self.confounder_structure is None:
             raise ValueError(
                 "confounder_structure is None (V15). "
                 "Define the formal causal graph before locking T1d config."
             )
 
         # V17: T2c requires intension_type
-        if self.thread_id == "t2c" and self.intension_type is None:
+        if self.base_thread == "t2c" and self.intension_type is None:
             raise ValueError(
                 "intension_type is None (V17). "
                 "Set to 'primary', 'secondary', or 'dissociation' before locking T2c config."

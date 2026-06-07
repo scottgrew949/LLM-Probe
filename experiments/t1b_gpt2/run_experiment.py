@@ -5,9 +5,12 @@ Tests which mechanism GPT-2 medium uses to evaluate counterfactuals:
   - Lewis/Stalnaker: possible-worlds similarity ordering
   - Pearl: do-calculus on a structural causal model
 
-The separating test: can the model geometrically distinguish forward_causal
-from backtracking counterfactuals? Same surface grammar — only causal direction
-differs. If separable → Pearl. If not → Lewis.
+NOTE: Construct under review (2026-06-06). forward_causal vs backtracking may
+separate thematic role, not Lewis vs Pearl — Pearl's abduction step also makes
+backtracking TRUE, so the old "Pearl=FALSE backtracking" was a do()-vs-counterfactual
+category error. Standard Lewis with miracle-weighting also agrees with Pearl on
+the common_cause case. A faithful separator requires an explicit interventional (do)
+framing. Verdicts from this run are provisional; the summary records the caveat.
 
 Prerequisite: experiments/t1b/run_validation.py AND experiments/t1a/run_experiment.py
 must have run and passed (T1a level3_confirmed=True required).
@@ -70,8 +73,10 @@ from experiments.config import ExperimentConfig
 from experiments.run import run_surface_null, check_phase_gate
 from extraction.extractor import extract_activations
 from stimuli.pipeline import verify_stimulus_file_frequency_matched
-from probes.probes import run_linear_probe
-from interventions.interventions import run_layer_sweep, assert_specificity_valid, mean_ablate
+from probes.probes import run_linear_probe, probe_beats_null
+from interventions.interventions import (
+    run_layer_sweep_multi_target, assert_specificity_valid, norm_matched_control_kl, patch_activation,
+)
 from core.io import load_result, save_result
 import torch
 
@@ -90,29 +95,39 @@ print("[Step 1] Building and locking experiment config...")
 
 expected_outcomes = {
     "lewis_vs_pearl_criterion": (
-        "Pairwise forward_causal vs backtracking probe accuracy at peak layer. "
-        "> 0.70 → Pearl (causal direction encoded — do-calculus). "
-        "<= 0.70 → Lewis (direction not encoded — similarity ordering)."
+        "Balanced pairwise accuracy at the peak layer, calibrated against a "
+        "shuffled-label null (no fixed cutoff). PEARL needs a POSITIVE signature: "
+        "forward_causal vs backtracking BEATS its null (balanced acc > the null's "
+        "95th percentile). LEWIS needs a POSITIVE collapse signature: forward vs "
+        "backtracking AND forward vs common_cause both FAIL to beat their nulls "
+        "(model treats them as one class). Neither met → inconclusive. 'Not separable' "
+        "alone does NOT imply Lewis (affirming the null)."
     ),
     "outcome_if_pearl": (
         "forward_causal and backtracking are linearly separable. "
         "Model encodes causal direction in its representations — "
-        "consistent with Pearl's do-calculus: intervening on cause vs effect "
-        "produces geometrically distinct internal states."
+        "consistent with Pearl's do-calculus separating intervention on cause vs effect."
     ),
     "outcome_if_lewis": (
-        "forward_causal and backtracking are NOT linearly separable. "
-        "Model treats both as structurally equivalent counterfactuals — "
-        "consistent with Lewis/Stalnaker: similarity ordering over possible "
-        "worlds does not encode causal direction."
+        "forward_causal vs backtracking AND forward_causal vs common_cause are both "
+        "at chance — the model treats the conditions as one equivalence class, "
+        "consistent with a single similarity-ordering mechanism that does not encode "
+        "causal direction or distinguish genuine causation from a common-cause confound."
     ),
-    "common_cause_prediction_lewis": (
-        "Under Lewis: common_cause clusters with forward_causal — "
-        "both are evaluated by similarity ordering, confound is invisible."
+    "construct_caveat": (
+        "CONSTRUCT UNDER REVIEW. (1) 'Pearl makes backtracking FALSE' was a do()-vs-"
+        "counterfactual category error: Pearl's abduction step also makes backtracking "
+        "TRUE, so forward-vs-backtracking may separate thematic role, not Lewis vs Pearl. "
+        "(2) Standard Lewis with miracle-weighting AGREES with Pearl that the barometer "
+        "common_cause counterfactual is false (storm still arrives) — the stated "
+        "Lewis/Pearl split on common_cause may be a non-divergence. A faithful separator "
+        "likely needs an explicit interventional (do) framing. Treat any mechanism verdict "
+        "from this thread as provisional until the stimuli are reframed."
     ),
-    "common_cause_prediction_pearl": (
-        "Under Pearl: common_cause is distinct from forward_causal — "
-        "do-calculus correctly separates genuine causation from confounded correlation."
+    "common_cause_note": (
+        "common_cause is reported descriptively only. Under canonical Lewis (miracle-"
+        "weighting) and Pearl alike, intervening on the barometer leaves the storm — so "
+        "this contrast does not cleanly separate the two theories and is not used as a criterion."
     ),
 }
 
@@ -183,10 +198,15 @@ print()
 
 print("[Step 5] Running binary probe at each layer (forward_causal vs backtracking)...")
 
-# Surface diagnostic: print 3 example sentences per class with word counts.
-# Unequal lengths cause positional-embedding confounds at layer 0 — check here.
+# Surface diagnostic: collect every sentence per class, then report BPE token
+# length per class. The probe extracts the FINAL token's activation, and the
+# final-token positional embedding is determined by the token count — not the
+# word count. Word-count parity (enforced in the grammar) does NOT guarantee
+# BPE token-count parity, so we check the real thing here with the model's own
+# tokenizer. A forward/backtracking token-length gap is a positional confound
+# the layer-0 probe would read as "causal structure".
 import json as _json
-sentence_samples: dict[str, list[tuple[str, int]]] = {"forward_causal": [], "backtracking": [], "common_cause": []}
+sentences_by_class: dict[str, list[str]] = {"forward_causal": [], "backtracking": [], "common_cause": []}
 with VALIDATED_PATH.open("r") as _diag_file:
     for _raw_line in _diag_file:
         _stripped = _raw_line.strip()
@@ -194,14 +214,34 @@ with VALIDATED_PATH.open("r") as _diag_file:
             continue
         _pair = _json.loads(_stripped)
         for _key, _lbl in (("sentence_a", _pair["label_a"]), ("sentence_b", _pair["label_b"])):
-            if _lbl in sentence_samples and len(sentence_samples[_lbl]) < 3:
-                sentence_samples[_lbl].append((_pair[_key], len(_pair[_key].split())))
+            if _lbl in sentences_by_class:
+                sentences_by_class[_lbl].append(_pair[_key])
 
-print("  Sample sentences by class (word count shown):")
+token_lengths_by_class: dict[str, list[int]] = {}
+for _label, _sentences in sentences_by_class.items():
+    token_lengths_by_class[_label] = [model.to_tokens(_s).shape[1] for _s in _sentences]
+
+print("  Sample sentences + BPE token-length stats by class:")
 for _label in ("forward_causal", "backtracking", "common_cause"):
-    print("  [" + _label + "]")
-    for _sent, _wc in sentence_samples[_label]:
-        print("    (" + str(_wc) + "w) " + _sent)
+    _lengths = token_lengths_by_class[_label]
+    if not _lengths:
+        continue
+    _mean_len = sum(_lengths) / len(_lengths)
+    print("  [" + _label + "]  tok mean=" + str(round(_mean_len, 2)) +
+          " min=" + str(min(_lengths)) + " max=" + str(max(_lengths)) + " n=" + str(len(_lengths)))
+    for _sent in sentences_by_class[_label][:3]:
+        print("    (" + str(model.to_tokens(_sent).shape[1]) + "tok) " + _sent)
+
+forward_mean_tokens = sum(token_lengths_by_class["forward_causal"]) / len(token_lengths_by_class["forward_causal"])
+backtracking_mean_tokens = sum(token_lengths_by_class["backtracking"]) / len(token_lengths_by_class["backtracking"])
+token_parity_gap = abs(forward_mean_tokens - backtracking_mean_tokens)
+if token_parity_gap > 0.5:
+    print()
+    print("  WARNING: forward_causal vs backtracking mean BPE token-length gap = " +
+          str(round(token_parity_gap, 2)) + " tokens.")
+    print("  The final-token position differs systematically between classes — a")
+    print("  positional-embedding confound the probe can exploit. Re-check grammar")
+    print("  token parity (not just word parity) before trusting the L2 result.")
 print()
 
 
@@ -231,11 +271,16 @@ for activation_set in layer_activation_sets:
     save_result(probe_result, RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json"))
     probe_results_by_layer[layer_index] = probe_result
 
+# Exclude layer 0 from peak selection: it is raw token + positional embeddings
+# (no attention, no context), so a peak there reflects a lexical/positional
+# surface confound, not computed causal structure. Select on balanced accuracy.
+candidate_layers = [layer_index for layer_index in probe_results_by_layer if layer_index != 0]
 peak_probe_layer = max(
-    probe_results_by_layer,
-    key=lambda layer_index: probe_results_by_layer[layer_index]["accuracy_mean"]
+    candidate_layers,
+    key=lambda layer_index: probe_results_by_layer[layer_index]["balanced_accuracy_mean"]
 )
 peak_probe_accuracy = probe_results_by_layer[peak_probe_layer]["accuracy_mean"]
+peak_probe_balanced_accuracy = probe_results_by_layer[peak_probe_layer]["balanced_accuracy_mean"]
 chance_baseline = probe_results_by_layer[peak_probe_layer]["chance_baseline"]
 
 layer_0_accuracy = probe_results_by_layer[0]["accuracy_mean"]
@@ -274,11 +319,29 @@ def pairwise_probe_accuracy(label_a: str, label_b: str) -> float:
     result = run_linear_probe(
         filtered_activations, filtered_labels, config, pair_ids=filtered_pair_group_ids
     )
-    return result["accuracy_mean"]
+    # Balanced accuracy: common_cause has ~50 items vs ~275, so raw accuracy is
+    # floored by the majority class. Balanced accuracy keeps chance at 0.5.
+    return result["balanced_accuracy_mean"]
+
+def pairwise_beats_null(label_a: str, label_b: str) -> dict:
+    """Calibrated decision for one contrast: does balanced accuracy beat a shuffled-label null?"""
+    condition_membership_mask = [condition_label in (label_a, label_b) for condition_label in all_labels]
+    filtered_activations = all_activations[condition_membership_mask]
+    filtered_labels = [condition_label for condition_label in all_labels if condition_label in (label_a, label_b)]
+    filtered_pair_group_ids = [
+        pair_group_id for pair_group_id, keep in zip(all_pair_group_ids, condition_membership_mask) if keep
+    ]
+    if len(set(filtered_labels)) < 2:
+        return {"beats_null": False, "null_balanced_p95": float("nan")}
+    return probe_beats_null(filtered_activations, filtered_labels, config, pair_ids=filtered_pair_group_ids, seed=config.seed)
 
 forward_vs_backtracking = pairwise_probe_accuracy("forward_causal", "backtracking")
 forward_vs_common_cause = pairwise_probe_accuracy("forward_causal", "common_cause")
 backtracking_vs_common_cause = pairwise_probe_accuracy("backtracking", "common_cause")
+
+# Calibrated decisions (replace the magic 0.70 / 0.60 thresholds).
+forward_vs_backtracking_null = pairwise_beats_null("forward_causal", "backtracking")
+forward_vs_common_cause_null = pairwise_beats_null("forward_causal", "common_cause")
 
 pairwise_results = {
     "forward_vs_backtracking": forward_vs_backtracking,
@@ -306,7 +369,8 @@ mean_forward_by_layer: dict[int, np.ndarray] = {
     for layer_activation_bundle in layer_activation_sets
 }
 
-# Use last backtracking sentence as target
+# Targets: every backtracking sentence. Multi-target sweep gives a per-layer mean
+# KL with a bootstrap CI over targets, not a single-sentence n=1 effect.
 backtracking_sentences = []
 import json
 with VALIDATED_PATH.open("r") as validated_jsonl_file:
@@ -317,72 +381,93 @@ with VALIDATED_PATH.open("r") as validated_jsonl_file:
             if stimulus_pair.get("label_b") == "backtracking":
                 backtracking_sentences.append(stimulus_pair["sentence_b"])
 
-target_run_config = {"stimulus": backtracking_sentences[-1]}
-
-sweep_result = run_layer_sweep(
+sweep_result = run_layer_sweep_multi_target(
     mean_forward_by_layer,
-    target_run_config,
+    backtracking_sentences,
     config.layer_range,
     config.component,
     config.token_positions[0],
     model,
+    seed=config.seed,
 )
 save_result(sweep_result, RESULTS_DIR / "layer_sweep.json")
 
 peak_patch_layer = sweep_result["peak_layer"]
-peak_patch_kl = sweep_result["layer_effects"][peak_patch_layer]
+peak_patch_kl = sweep_result["mean_kl_by_layer"][peak_patch_layer]
+peak_patch_kl_ci = sweep_result["kl_ci_95_by_layer"][peak_patch_layer]
 
-# Specificity check
-peak_act_set = next(s for s in layer_activation_sets if s["layer"] == peak_patch_layer)
-peak_activations = np.array(peak_act_set["activations"])
-
-with torch.no_grad():
-    baseline_logits = model(target_run_config["stimulus"])[0, -1, :].tolist()
-
-mean_ablation_result = mean_ablate(
-    peak_activations, target_run_config, peak_patch_layer,
-    config.component, config.token_positions[0], model,
-    baseline_logits=baseline_logits,
+# Specificity: forward-mean patch vs norm-matched random directions at peak layer,
+# averaged over targets. Isolates direction from perturbation magnitude.
+control_result = norm_matched_control_kl(
+    mean_forward_by_layer[peak_patch_layer], backtracking_sentences,
+    peak_patch_layer, config.component, config.token_positions[0], model,
+    seed=config.seed,
 )
-assert_specificity_valid(peak_patch_kl, mean_ablation_result["kl_from_baseline"] or 0.0, peak_patch_layer, min_ratio=1.3)
+assert_specificity_valid(peak_patch_kl, control_result["control_kl_p95"], peak_patch_layer)
 
-print("  Peak patching layer : " + str(peak_patch_layer) + "  (KL=" + str(round(peak_patch_kl, 4)) + ")")
+print("  Peak patching layer : " + str(peak_patch_layer)
+      + "  (mean KL=" + str(round(peak_patch_kl, 4))
+      + ", 95% CI [" + str(round(peak_patch_kl_ci[0], 4)) + ", " + str(round(peak_patch_kl_ci[1], 4)) + "]"
+      + ", n_targets=" + str(sweep_result["n_targets"]) + ")")
+print("  Norm-matched control KL : " + str(round(control_result["mean_control_kl"], 4)))
 
-# L3 direction verification: confirm patch shifts predictions toward forward_causal.
-# The patching argument is forward_mean → backtracking target. If L3 is real,
-# the patched distribution should assign higher probability to forward-typical
-# completions (effect past participles) and lower probability to
-# backtracking-typical completions (cause past participles).
-print()
-print("  L3 direction check:")
-print("  Baseline completions (backtracking target, before patch):")
+# Illustrative direction check on one target (qualitative only — the quantitative
+# evidence is the multi-target sweep + control above; this just shows WHAT a patch
+# does to one completion).
+illustrative_target = {"stimulus": backtracking_sentences[-1]}
 with torch.no_grad():
-    direction_check_logits = model(target_run_config["stimulus"])[0, -1, :]
-    direction_check_probs  = torch.softmax(direction_check_logits, dim=-1)
-    top_tokens = direction_check_probs.topk(10)
-for token_prob, token_idx in zip(top_tokens.values.tolist(), top_tokens.indices.tolist()):
-    token_str = model.tokenizer.decode([token_idx])
-    print("    " + repr(token_str) + " " + str(round(token_prob * 100, 2)) + "%")
+    baseline_target_probs = torch.softmax(model(illustrative_target["stimulus"])[0, -1, :], dim=-1)
+    baseline_top = baseline_target_probs.topk(5)
+baseline_completions = [
+    (model.to_string(token_idx), token_prob)
+    for token_prob, token_idx in zip(baseline_top.values.tolist(), baseline_top.indices.tolist())
+]
+patched_direction_result = patch_activation(
+    mean_forward_by_layer[peak_patch_layer], illustrative_target,
+    peak_patch_layer, config.component, config.token_positions[0], model,
+)
+patched_completions = list(zip(patched_direction_result["top_tokens"], patched_direction_result["top_probs"]))
+print("  Illustrative completions (one target) before | after patch:")
+for (before_token, before_prob), (after_token, after_prob) in zip(baseline_completions, patched_completions):
+    left  = (repr(before_token) + " " + str(round(before_prob * 100, 1)) + "%").ljust(20)
+    print("    " + left + "|  " + repr(after_token) + " " + str(round(after_prob * 100, 1)) + "%")
 print()
-print("  Compare top-10 above to what the same sentence produces after patching.")
-print("  If patching shifts the top token from a cause-verb toward an effect-verb, L3 direction confirmed.")
-print()
 
-# ── Step 8: Determine Lewis vs Pearl ─────────────────────────────────────────
+# ── Step 8: Determine Lewis vs Pearl (three-way, calibrated signatures) ───────
+# No magic thresholds. Each contrast's verdict is "does balanced accuracy beat the
+# 95th percentile of a shuffled-label null for this geometry?" (probe_beats_null).
+#   PEARL: forward vs backtracking BEATS its null (direction is positively encoded).
+#   LEWIS: forward vs backtracking AND forward vs common_cause both FAIL to beat
+#          their nulls (model collapses them to one equivalence class — a positive
+#          collapse signature, not mere absence at an arbitrary ceiling).
+#   else inconclusive.
+layers_agree = peak_probe_layer == peak_patch_layer
 
-# Pre-specified criterion
-pearl_confirmed = forward_vs_backtracking > 0.70
-layers_agree    = peak_probe_layer == peak_patch_layer
+pearl_confirmed = forward_vs_backtracking_null["beats_null"]
+lewis_confirmed = (
+    not forward_vs_backtracking_null["beats_null"]
+    and not forward_vs_common_cause_null["beats_null"]
+)
 
-if pearl_confirmed:
+if pearl_confirmed and not lewis_confirmed:
+    mechanism_label = "PEARL (do-calculus)"
     mechanism_interpretation = expected_outcomes["outcome_if_pearl"]
-else:
+elif lewis_confirmed and not pearl_confirmed:
+    mechanism_label = "LEWIS (possible-worlds)"
     mechanism_interpretation = expected_outcomes["outcome_if_lewis"]
-
-if forward_vs_common_cause < backtracking_vs_common_cause:
-    common_cause_note = expected_outcomes["common_cause_prediction_lewis"]
 else:
-    common_cause_note = expected_outcomes["common_cause_prediction_pearl"]
+    mechanism_label = "INCONCLUSIVE"
+    mechanism_interpretation = (
+        "Neither a positive Pearl signature (forward vs backtracking beats its "
+        "shuffled-label null) nor a positive Lewis collapse signature (both contrasts "
+        "fail to beat their nulls) was met. The geometry does not pre-specify a verdict. "
+        "NOTE: T1b's stimulus construct is itself under review — forward vs backtracking "
+        "as built may separate thematic role rather than Lewis vs Pearl, and standard "
+        "Lewis (miracle-weighting) agrees with Pearl on the common_cause case. Do not "
+        "read a mechanism claim from this run until the construct is reframed."
+    )
+
+common_cause_note = expected_outcomes["common_cause_note"]
 
 summary = {
     "experiment_id": config.experiment_id,
@@ -397,10 +482,19 @@ summary = {
     "pairwise_forward_vs_common_cause": float(forward_vs_common_cause),
     "pairwise_backtracking_vs_common_cause": float(backtracking_vs_common_cause),
     "peak_patch_layer": peak_patch_layer,
-    "peak_patch_kl": float(peak_patch_kl),
+    "peak_patch_kl_mean": float(peak_patch_kl),
+    "peak_patch_kl_ci_95": [float(peak_patch_kl_ci[0]), float(peak_patch_kl_ci[1])],
+    "peak_patch_n_targets": int(sweep_result["n_targets"]),
+    "norm_matched_control_kl": float(control_result["mean_control_kl"]),
     "layers_agree": layers_agree,
+    "forward_vs_backtracking_beats_null": bool(forward_vs_backtracking_null["beats_null"]),
+    "forward_vs_backtracking_null_p95": float(forward_vs_backtracking_null["null_balanced_p95"]),
+    "forward_vs_common_cause_beats_null": bool(forward_vs_common_cause_null["beats_null"]),
     "pearl_confirmed": pearl_confirmed,
+    "lewis_confirmed": lewis_confirmed,
+    "mechanism_label": mechanism_label,
     "mechanism_interpretation": mechanism_interpretation,
+    "construct_caveat": expected_outcomes["construct_caveat"],
     "common_cause_interpretation": common_cause_note,
     "expected_outcomes": config.expected_outcomes,
 }
@@ -430,27 +524,32 @@ for layer_index in range(GPT2_MEDIUM_N_LAYERS):
     )
 
 print()
-print("Pairwise probe at peak layer " + str(peak_probe_layer) + ":")
-print("  forward_causal vs backtracking : " + str(round(forward_vs_backtracking * 100, 1)) + "%  (criterion > 70% for Pearl)")
-print("  forward_causal vs common_cause : " + str(round(forward_vs_common_cause * 100, 1)) + "%")
+print("Pairwise balanced accuracy at peak layer " + str(peak_probe_layer) + " (chance 50%, calibrated vs shuffled-label null):")
+print("  forward_causal vs backtracking : " + str(round(forward_vs_backtracking * 100, 1)) + "%  "
+      + "(null p95 " + str(round(forward_vs_backtracking_null["null_balanced_p95"] * 100, 1)) + "%, "
+      + "beats null: " + str(forward_vs_backtracking_null["beats_null"]) + " → Pearl signature)")
+print("  forward_causal vs common_cause : " + str(round(forward_vs_common_cause * 100, 1)) + "%  "
+      + "(beats null: " + str(forward_vs_common_cause_null["beats_null"]) + ")")
 print("  backtracking vs common_cause   : " + str(round(backtracking_vs_common_cause * 100, 1)) + "%")
 print()
-print("Peak patching layer : Layer " + str(peak_patch_layer) + "  (KL=" + str(round(peak_patch_kl, 4)) + ")")
+print("Peak patching layer : Layer " + str(peak_patch_layer) + "  (mean KL=" + str(round(peak_patch_kl, 4))
+      + ", 95% CI [" + str(round(peak_patch_kl_ci[0], 4)) + ", " + str(round(peak_patch_kl_ci[1], 4)) + "])")
 print("L2 / L3 agreement   : " + ("YES" if layers_agree else "NO"))
 print()
 print("Surface null accuracy : " + str(round(surface_null_accuracy * 100, 1)) + "%")
 print()
 print("=" * 60)
-print("MECHANISM: " + ("PEARL (do-calculus)" if pearl_confirmed else "LEWIS (possible-worlds)"))
+print("MECHANISM: " + mechanism_label)
 print("=" * 60)
 print()
 print("Interpretation:")
 print("  " + mechanism_interpretation)
 print()
+print("Construct caveat:")
+print("  " + expected_outcomes["construct_caveat"])
+print()
 print("Common-cause position:")
 print("  " + common_cause_note)
 print()
-if pearl_confirmed:
-    print("T1c: UNLOCKED — test Lewis vs Stalnaker within worlds-based semantics")
-else:
-    print("T1c: RELEVANT — Lewis confirmed; T1c can probe similarity structure further")
+print("T1c runs regardless of this verdict (records the T1b context); it tests "
+      "Lewis vs Stalnaker via dispersion within the worlds-based camp.")

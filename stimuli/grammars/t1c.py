@@ -2,185 +2,198 @@
 stimuli/grammars/t1c.py — Stimulus grammar for Thread T1c (Lewis vs Stalnaker).
 
 ─── CONCEPT: What T1c tests ──────────────────────────────────────────────────
-T1b established GPT-2 uses Pearl's do-calculus mechanism. T1c asks a finer
-question within the worlds-based camp: does the model's counterfactual geometry
-match Lewis (similarity ordering) or Stalnaker (single closest world)?
+T1b established the coarse mechanism (worlds-based vs Pearl). T1c asks the finer
+question *within* the worlds-based camp: does the model's counterfactual geometry
+match Lewis (similarity-set selection) or Stalnaker (single closest-world)?
 
-Lewis and Stalnaker both evaluate counterfactuals via possible worlds — they
-disagree on the structure of the selection function.
+Lewis: "If A were true, C would be true" holds iff C holds in ALL closest
+  A-worlds. At a symmetric tie (no unique closest world) the truth value is
+  INDETERMINATE — the conditional ranges over a *set* of equally-close worlds.
 
-Lewis: "If A were true, C would be true" holds iff C is true in ALL closest
-  A-worlds. Borderline cases (worlds equidistant from actual) produce
-  indeterminate truth values. Lewis's logic is a variadic conditional — it
-  ranges over a set of closest worlds.
+Stalnaker: holds iff C holds in THE closest A-world (single selection + Limit
+  Assumption — there is always a unique closest world). Ties are still
+  DETERMINATE — one world is picked.
 
-Stalnaker: "If A were true, C would be true" holds iff C is true in THE
-  closest A-world (single selection). Stalnaker adds the Limit Assumption —
-  there is always a unique closest world. Borderline cases have determinate
-  truth values (one world wins).
+─── CONCEPT: The discriminator is DISPERSION, not separability ───────────────
+A probe that separates "clear" from "tie" sentences proves only that the two
+sentence-types differ — true under BOTH theories. It cannot distinguish Lewis
+from Stalnaker.
 
-─── CONCEPT: Three conditions ────────────────────────────────────────────────
-clear_case — both agree (positive control):
-  "If the match had been struck, the fire would have ignited."
-  Both Lewis and Stalnaker agree: the closest world where match was struck
-  is one where fire ignites. No indeterminacy.
+The theories diverge on the GEOMETRY of the tie representations:
 
-tie_case — Lewis predicts indeterminate, Stalnaker predicts determinate:
-  "If the coin had landed heads, it would have been a fair toss."
-  Lewis: no unique closest heads-world (fair coin = symmetry). Indeterminate.
-  Stalnaker: one world is selected. Determinate truth value.
+  Lewis      → tie activations are DIFFUSE. No unique world is selected, so the
+               representation spreads over the set of equally-close worlds.
+               dispersion(tie) > dispersion(clear).
 
-near_miss — worlds that are nearly identical but diverge on one variable:
-  "If the temperature had been 99°C instead of 100°C, the water would not
-   have boiled." Tests whether model tracks fine-grained similarity ordering.
-  Lewis: depends on full similarity metric. Stalnaker: single closest world.
+  Stalnaker  → tie activations COLLAPSE to a centroid. One world is picked, so
+               ties are as tightly clustered as determinate clear cases.
+               dispersion(tie) ≈ dispersion(clear).
 
-─── CONCEPT: Geometric predictions ───────────────────────────────────────────
-If model implements Lewis:
-  tie_case representations are diffuse — no single centroid. The model
-  treats the tie as genuinely indeterminate. Geometric variance on tie cases
-  is higher than on clear cases.
+The experiment therefore measures a dispersion ratio, not a probe accuracy.
 
-If model implements Stalnaker:
-  tie_case representations converge to a single centroid — the model picks
-  one world. Geometric variance on tie cases ≈ clear cases.
+─── CONCEPT: Why minimal pairs (matched diversity) ───────────────────────────
+A dispersion ratio is only interpretable if clear and tie have the SAME
+underlying topical diversity. If tie sentences span coin/die/path while clear
+sentences span match/rain/drug, tie variance is inflated by topic spread — you
+would misread topical diversity as Lewisian indeterminacy.
 
-─── CONCEPT: T1b prerequisite ────────────────────────────────────────────────
-T1c runs only after T1b establishes which coarse-grained mechanism (Lewis vs
-Pearl). T1c is within-Lewis — it only matters if T1b finds a worlds-based
-mechanism, but we run it regardless for completeness.
+So clear and tie are MINIMAL PAIRS over the same domains: identical template,
+identical noun, identical action — differing only in an adjective that flips the
+antecedent between determinate (asymmetric) and indeterminate (symmetric):
+
+  clear_case (determinate):   "If the loaded coin had been flipped, the outcome would have"
+  tie_case   (indeterminate): "If the fair coin had been flipped, the outcome would have"
+
+Matched length, matched topic, matched vocabulary. Any residual dispersion gap
+is the indeterminacy signal, not a confound.
+
+─── CONCEPT: Lexically varied bias cue ───────────────────────────────────────
+If every determinate sentence said "loaded" and every tie said "fair", the probe
+could read those two words instead of the structural property. Each domain
+therefore draws the cue from a LIST of synonyms — {loaded, weighted, rigged,
+biased, crooked} vs {fair, balanced, unbiased, even, ordinary} — so the
+distinction the geometry must encode is the *semantic category* (asymmetric vs
+symmetric), not a single lexical item. The cue diversity is matched across the
+two classes (5 adjectives each), so it cancels in the dispersion ratio.
+
+─── CONCEPT: near_miss (secondary) ───────────────────────────────────────────
+near_miss probes fine-grained similarity ordering: two worlds just below / just
+above a threshold, both close to actual. Under Lewis the proximity metric orders
+them; under Stalnaker each resolves to its own closest world. Secondary to the
+clear-vs-tie dispersion test.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import itertools
 import random
-from pathlib import Path
 from typing import Any
 
-_T1A_PATH = Path(__file__).parent / "t1a.py"
-_t1a_spec = importlib.util.spec_from_file_location("t1a_grammar", _T1A_PATH)
-_t1a_module = importlib.util.module_from_spec(_t1a_spec)
-_t1a_spec.loader.exec_module(_t1a_module)
-DOMAINS: list[dict[str, Any]] = _t1a_module.DOMAINS
 
+# ── Tie domains: minimal-pair cores ───────────────────────────────────────────
+# Each domain crosses a determinate (asymmetric) adjective against an
+# indeterminate (symmetric) adjective over a shared clause core. The pair
+# differs in exactly one word — the adjective — so clear_case and tie_case are
+# matched on topic, length, and structure.
+#
+# asymmetric_adjs → clear_case  (unique closest world: a biased coin has a
+#                                determinate most-likely outcome)
+# symmetric_adjs  → tie_case    (no unique closest world: a fair coin is
+#                                symmetric between outcomes — Lewis-indeterminate)
 
-_EFFECT_PAST_STATE: dict[str, str] = {
-    "match_fire":       "ignited",
-    "rain_ground":      "been wet",
-    "drug_recovery":    "recovered",
-    "fertilizer_crop":  "grown",
-    "switch_light":     "turned on",
-    "watering_plant":   "grown",
-    "study_exam":       "passed the exam",
-    "exercise_fitness": "improved",
-    "heater_temp":      "warmed",
-    "smoking_cancer":   "developed",
-    "barometer_storm":  "arrived",
-    "dam_valley":       "flooded",
-}
-
-_CLEAR_DOMAINS: list[dict[str, Any]] = [
-    {**domain, "effect_past_state": _EFFECT_PAST_STATE[domain["domain_id"]]}
-    for domain in DOMAINS
-    if domain["domain_id"] not in {"barometer_storm"}
-]
-
-
-# ── Templates ─────────────────────────────────────────────────────────────────
-
-CLEAR_CASE_TEMPLATES: list[str] = [
-    "If {cause_noun} had {cause_verb_past}, {effect_noun} would have",
-    "Had {cause_noun} {cause_verb_past}, {effect_noun} would have",
-    "Suppose {cause_noun} had {cause_verb_past}; {effect_noun} would have",
-    "In a scenario where {cause_noun} had {cause_verb_past}, {effect_noun} would have",
-    "If {cause_noun} were to have {cause_verb_past}, {effect_noun} would have",
-]
-
-# Tie cases use symmetric/indeterminate framings — both outcome-A and outcome-B
-# sentences equally plausible. Tests whether model represents indeterminacy.
-# sentence_a: one determinate completion; sentence_b: equally valid alternative.
-TIE_CASE_ITEMS: list[dict[str, str]] = [
+_TIE_DOMAINS: list[dict[str, Any]] = [
     {
-        "sentence_a": "If the coin had landed heads, the outcome would have",
-        "sentence_b": "If the coin had landed tails, the outcome would have",
-        "domain": "fair_coin",
+        "domain_id": "coin",
+        "noun": "coin",
+        "action_past": "been flipped",
+        "tail": "the outcome",
+        "asymmetric_adjs": ["loaded", "weighted", "rigged", "biased", "crooked"],
+        "symmetric_adjs":  ["fair", "balanced", "unbiased", "even", "ordinary"],
     },
     {
-        "sentence_a": "If the die had landed on an even number, the result would have",
-        "sentence_b": "If the die had landed on an odd number, the result would have",
-        "domain": "fair_die",
+        "domain_id": "die",
+        "noun": "die",
+        "action_past": "been rolled",
+        "tail": "the result",
+        "asymmetric_adjs": ["loaded", "weighted", "rigged", "shaved", "biased"],
+        "symmetric_adjs":  ["fair", "balanced", "unbiased", "even", "standard"],
     },
     {
-        "sentence_a": "If the left path had been chosen, the traveller would have",
-        "sentence_b": "If the right path had been chosen, the traveller would have",
-        "domain": "symmetric_paths",
+        "domain_id": "route",
+        "noun": "route",
+        "action_past": "been taken",
+        "tail": "the traveller",
+        "asymmetric_adjs": ["shorter", "faster", "quicker", "steeper", "longer"],
+        "symmetric_adjs":  ["equal", "identical", "parallel", "matching", "twin"],
     },
     {
-        "sentence_a": "If player A had won the symmetric tournament, the prize would have",
-        "sentence_b": "If player B had won the symmetric tournament, the prize would have",
-        "domain": "symmetric_tournament",
+        "domain_id": "match",
+        "noun": "match",
+        "action_past": "been replayed",
+        "tail": "the winner",
+        "asymmetric_adjs": ["lopsided", "uneven", "mismatched", "rigged", "fixed"],
+        "symmetric_adjs":  ["even", "tied", "balanced", "close", "level"],
     },
     {
-        "sentence_a": "If the first identical twin had been chosen, the result would have",
-        "sentence_b": "If the second identical twin had been chosen, the result would have",
-        "domain": "identical_twins",
+        "domain_id": "twins",
+        "noun": "twin",
+        "action_past": "been chosen",
+        "tail": "the result",
+        "asymmetric_adjs": ["taller", "older", "stronger", "smarter", "heavier"],
+        "symmetric_adjs":  ["identical", "matching", "indistinct", "similar", "alike"],
     },
 ]
 
-# Near-miss cases: worlds almost identical to actual, one variable differs.
-# Tests fine-grained similarity ordering — Lewis needs a full metric.
-NEAR_MISS_ITEMS: list[dict[str, str]] = [
-    {
-        "sentence_a": "If the temperature had been 99 degrees instead of 100, the water would have",
-        "sentence_b": "If the temperature had been 101 degrees instead of 100, the water would have",
-        "domain": "boiling_point",
-    },
-    {
-        "sentence_a": "If the speed had been one unit below the threshold, the car would have",
-        "sentence_b": "If the speed had been one unit above the threshold, the car would have",
-        "domain": "speed_threshold",
-    },
-    {
-        "sentence_a": "If the score had been one point less than the passing mark, the student would have",
-        "sentence_b": "If the score had been one point more than the passing mark, the student would have",
-        "domain": "passing_mark",
-    },
-    {
-        "sentence_a": "If the pressure had dropped one unit less, the seal would have",
-        "sentence_b": "If the pressure had dropped one unit more, the seal would have",
-        "domain": "pressure_seal",
-    },
-    {
-        "sentence_a": "If the dose had been one milligram below the threshold, the effect would have",
-        "sentence_b": "If the dose had been one milligram above the threshold, the effect would have",
-        "domain": "dose_threshold",
-    },
+# Shared frames — structurally identical to the T1a/T1b counterfactual templates,
+# adjective slot added. {adj} {noun} carries the entire manipulation.
+_TIE_TEMPLATES: list[str] = [
+    "If the {adj} {noun} had {action_past}, {tail} would have",
+    "Had the {adj} {noun} {action_past}, {tail} would have",
+    "Suppose the {adj} {noun} had {action_past}; {tail} would have",
+    "In a scenario where the {adj} {noun} had {action_past}, {tail} would have",
+    "If the {adj} {noun} were to have {action_past}, {tail} would have",
 ]
 
-_MAX_PAIRS: int = 200
+
+# ── near_miss domains: just-below vs just-above a threshold ────────────────────
+# Both sides are one step from the actual threshold — symmetric near-misses.
+# Secondary condition: tests fine-grained similarity ordering, not the primary
+# Lewis/Stalnaker dispersion test.
+
+_NEAR_MISS_DOMAINS: list[dict[str, str]] = [
+    {"domain_id": "boiling_point", "below": "one degree below boiling",  "above": "one degree above boiling",  "subject": "the temperature", "tail": "the water"},
+    {"domain_id": "speed_limit",   "below": "one unit below the limit",  "above": "one unit above the limit",  "subject": "the speed",       "tail": "the driver"},
+    {"domain_id": "passing_mark",  "below": "one point below the mark",  "above": "one point above the mark",  "subject": "the score",       "tail": "the student"},
+    {"domain_id": "seal_pressure", "below": "one unit below the rating", "above": "one unit above the rating", "subject": "the pressure",    "tail": "the seal"},
+    {"domain_id": "dose_threshold","below": "one milligram below the threshold", "above": "one milligram above the threshold", "subject": "the dose", "tail": "the effect"},
+]
+
+_NEAR_MISS_TEMPLATES: list[str] = [
+    "If {subject} had been {delta}, {tail} would have",
+    "Had {subject} been {delta}, {tail} would have",
+    "Suppose {subject} had been {delta}; {tail} would have",
+    "In a scenario where {subject} had been {delta}, {tail} would have",
+    "If {subject} were to have been {delta}, {tail} would have",
+]
+
+
+# clear/tie minimal pairs: 5 domains × 5 templates × 5 adjective-pairs = 125
+# near_miss pairs:         5 domains × 5 templates                     =  25
+_MAX_PAIRS: int = 150
 
 
 def generate(n: int, seed: int = 42) -> list[dict[str, Any]]:
     """
-    Generate n T1c stimulus pairs across three conditions.
+    Generate n T1c stimulus pairs.
 
-    clear_case: unambiguous counterfactuals from T1a domains.
-    tie_case: symmetric worlds — Lewis predicts indeterminacy, Stalnaker does not.
-    near_miss: worlds differing by one variable — tests fine-grained similarity.
+    clear_case vs tie_case — minimal pairs over shared domains, differing only in
+      a determinate (asymmetric) vs indeterminate (symmetric) adjective. This is
+      the primary dispersion test: under Lewis, tie activations are more diffuse
+      than clear; under Stalnaker they collapse to a centroid like clear.
+
+    near_miss — just-below vs just-above a threshold (secondary similarity-ordering
+      condition).
+
+    Pair label conventions:
+      ("clear_case", "tie_case")   — sentence_a determinate, sentence_b symmetric
+      ("near_miss",  "near_miss")  — sentence_a just-below, sentence_b just-above
+
+    clear_case and tie_case are produced in equal numbers (125 each) so the
+    dispersion comparison is over matched-size, matched-diversity sets.
 
     Args:
-        n: number of pairs to generate. Must be <= 200.
-        seed: random seed for reproducibility.
+        n:    Number of pairs to return. Must be <= 150.
+        seed: Instance-level RNG seed — no global state side effects.
 
     Returns:
         List of n StimulusPair dicts conforming to stimulus.schema.json.
+
+    Raises:
+        ValueError: if n > 150.
     """
     if n > _MAX_PAIRS:
         raise ValueError(f"n={n} exceeds maximum of {_MAX_PAIRS} pairs.")
 
-    rng = random.Random(seed)
     all_pairs: list[dict[str, Any]] = []
 
     def make_pair(sentence_a: str, sentence_b: str, label_a: str, label_b: str, notes: str = "") -> dict[str, Any]:
@@ -198,92 +211,77 @@ def generate(n: int, seed: int = 42) -> list[dict[str, Any]]:
             pair["notes"] = notes
         return pair
 
-    # Clear cases: pair two clear-case sentences from different domains
-    for domain_a, domain_b, tmpl_a, tmpl_b in itertools.product(
-        _CLEAR_DOMAINS[:5], _CLEAR_DOMAINS[5:], CLEAR_CASE_TEMPLATES[:3], CLEAR_CASE_TEMPLATES[2:]
-    ):
-        sentence_a = tmpl_a.format(
-            cause_noun=domain_a["cause_noun"],
-            cause_verb_past=domain_a["cause_verb_past"],
-            effect_noun=domain_a["effect_noun"],
-        )
-        sentence_b = tmpl_b.format(
-            cause_noun=domain_b["cause_noun"],
-            cause_verb_past=domain_b["cause_verb_past"],
-            effect_noun=domain_b["effect_noun"],
-        )
-        all_pairs.append(make_pair(sentence_a, sentence_b, "clear_case", "clear_case"))
-
-    # Tie cases: pair sentence_a with sentence_b from tie items
-    for item in TIE_CASE_ITEMS:
-        for tmpl in CLEAR_CASE_TEMPLATES:
-            domain = rng.choice(_CLEAR_DOMAINS)
-            clear_sentence = tmpl.format(
-                cause_noun=domain["cause_noun"],
-                cause_verb_past=domain["cause_verb_past"],
-                effect_noun=domain["effect_noun"],
+    # clear_case vs tie_case — minimal pairs (adjective is the only difference)
+    for domain in _TIE_DOMAINS:
+        adjective_pairs = list(zip(domain["asymmetric_adjs"], domain["symmetric_adjs"]))
+        for template, (asymmetric_adj, symmetric_adj) in itertools.product(_TIE_TEMPLATES, adjective_pairs):
+            clear_sentence = template.format(
+                adj=asymmetric_adj, noun=domain["noun"],
+                action_past=domain["action_past"], tail=domain["tail"],
+            )
+            tie_sentence = template.format(
+                adj=symmetric_adj, noun=domain["noun"],
+                action_past=domain["action_past"], tail=domain["tail"],
             )
             all_pairs.append(make_pair(
-                item["sentence_a"], item["sentence_b"], "tie_case", "tie_case",
-                notes=f"symmetric domain: {item['domain']}"
+                clear_sentence, tie_sentence, "clear_case", "tie_case",
+                notes=f"minimal pair ({domain['domain_id']}): '{asymmetric_adj}' determinate vs '{symmetric_adj}' symmetric",
             ))
+
+    # near_miss vs near_miss — symmetric just-below / just-above a threshold
+    for domain in _NEAR_MISS_DOMAINS:
+        for template in _NEAR_MISS_TEMPLATES:
+            below_sentence = template.format(subject=domain["subject"], delta=domain["below"], tail=domain["tail"])
+            above_sentence = template.format(subject=domain["subject"], delta=domain["above"], tail=domain["tail"])
             all_pairs.append(make_pair(
-                clear_sentence, item["sentence_a"], "clear_case", "tie_case",
-                notes=f"clear vs tie — Lewis/Stalnaker discriminator"
+                below_sentence, above_sentence, "near_miss", "near_miss",
+                notes=f"near-miss ({domain['domain_id']}): just-below vs just-above threshold",
             ))
 
-    # Near-miss cases
-    for item in NEAR_MISS_ITEMS:
-        for tmpl in CLEAR_CASE_TEMPLATES:
-            domain = rng.choice(_CLEAR_DOMAINS)
-            clear_sentence = tmpl.format(
-                cause_noun=domain["cause_noun"],
-                cause_verb_past=domain["cause_verb_past"],
-                effect_noun=domain["effect_noun"],
-            )
-            all_pairs.append(make_pair(
-                item["sentence_a"], item["sentence_b"], "near_miss", "near_miss",
-                notes=f"near-miss domain: {item['domain']}"
-            ))
-            all_pairs.append(make_pair(
-                clear_sentence, item["sentence_a"], "clear_case", "near_miss",
-                notes="clear vs near-miss — similarity ordering test"
-            ))
+    random.Random(seed).shuffle(all_pairs)
+    selected_pairs = all_pairs[:n]
 
-    rng.shuffle(all_pairs)
-    selected = all_pairs[:n]
+    for index, pair in enumerate(selected_pairs):
+        pair["pair_id"] = f"t1c_{index + 1:04d}"
 
-    for idx, pair in enumerate(selected):
-        pair["pair_id"] = f"t1c_{idx + 1:04d}"
-
-    return selected
+    return selected_pairs
 
 
 def generate_behavioral_items() -> list[dict[str, Any]]:
-    """Return behavioral gate items for T1c."""
+    """
+    Return behavioral gate items for T1c.
+
+    Tests that the model handles the DETERMINATE (asymmetric) cases correctly —
+    competence on the clear pole of the minimal pairs. The symmetric ties are
+    deliberately not gated: their answer is indeterminate, so there is no correct
+    forced choice to score.
+
+    Returns:
+        List of 4 forced-choice dicts: question, choice_a, choice_b, correct.
+    """
     return [
         {
-            "question": "If the water temperature had been 99 degrees instead of 100, the water would have",
-            "choice_a": "not boiled",
-            "choice_b": "boiled",
+            "question": "A coin is loaded to favor heads. If it had been flipped, it would most likely have landed",
+            "choice_a": "heads",
+            "choice_b": "tails",
             "correct": "a",
         },
         {
-            "question": "If the student's score had been just above the passing mark, the student would have",
-            "choice_a": "passed",
-            "choice_b": "failed",
+            "question": "One route is clearly shorter than the other. If the shorter route had been taken, the traveller would have arrived",
+            "choice_a": "sooner",
+            "choice_b": "later",
             "correct": "a",
         },
         {
-            "question": "If the match had been struck, the fire would have",
-            "choice_a": "ignited",
-            "choice_b": "gone out",
+            "question": "A die is weighted toward six. If it had been rolled, the result would most likely have been",
+            "choice_a": "a six",
+            "choice_b": "a one",
             "correct": "a",
         },
         {
-            "question": "If the drug had been administered, the patient would have",
-            "choice_a": "recovered",
-            "choice_b": "worsened",
+            "question": "In a lopsided match the stronger team dominates. If the lopsided match had been replayed, the winner would most likely have been",
+            "choice_a": "the stronger team",
+            "choice_b": "the weaker team",
             "correct": "a",
         },
     ]

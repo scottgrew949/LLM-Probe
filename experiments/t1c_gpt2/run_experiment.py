@@ -10,11 +10,14 @@ Three conditions:
   tie_case    — symmetric nearest worlds; Lewis: indeterminate; Stalnaker: determinate
   near_miss   — worlds differing by one variable; tests fine-grained similarity ordering
 
-Discriminating criterion:
-  clear_case vs tie_case pairwise accuracy > 0.70
-    → model geometrically separates them → Lewis-consistent (indeterminacy encoded)
-  <= 0.70
-    → model treats them equivalently → Stalnaker-consistent (all determinate)
+Discriminating criterion (DISPERSION, not separability — a probe separates clear
+from tie under BOTH theories):
+  participation-ratio of tie_case / clear_case activations, bootstrap 95% CI vs
+  the null ratio = 1:
+    CI entirely above 1 (and above the layer-0 lexical baseline) → Lewis
+      (tie cloud diffuse — indeterminacy encoded)
+    CI brackets 1 → Stalnaker (cannot reject equal dispersion — tie collapses to
+      a clear-like centroid)
 
 T1c is most interpretable when T1b confirmed worlds-based (not Pearl), but runs
 regardless and records the T1b context in its summary.
@@ -42,18 +45,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-THREAD_ID            = "t1c"
+THREAD_ID            = "t1c_gpt2"
 MODEL_ID             = "gpt2-medium"
 GPT2_MEDIUM_N_LAYERS = 24
 
-VALIDATED_PATH    = PROJECT_ROOT / "stimuli" / "validated" / THREAD_ID / "pairs.validated.jsonl"
+VALIDATED_PATH    = PROJECT_ROOT / "stimuli" / "validated" / "t1c" / "pairs.validated.jsonl"
 RESULTS_DIR       = PROJECT_ROOT / "experiments" / THREAD_ID / "results"
 CONFIG_PATH       = PROJECT_ROOT / "experiments" / THREAD_ID / "config.json"
 SURFACE_NULL_PATH = RESULTS_DIR / "surface_null.json"
 SUMMARY_PATH      = RESULTS_DIR / "summary.json"
 
 # T1c requires T1b to have run — its interpretation is conditioned on T1b outcome.
-T1B_PREREQUISITE_ID = "t1b"
+T1B_PREREQUISITE_ID = "t1b_gpt2"
 
 
 # ── Guards ────────────────────────────────────────────────────────────────────
@@ -61,14 +64,14 @@ T1B_PREREQUISITE_ID = "t1b"
 if not VALIDATED_PATH.exists():
     print("ERROR: Validated stimulus file not found.")
     print("  Expected: " + str(VALIDATED_PATH))
-    print("  Run scripts/run_validation.py --thread t1c first.")
+    print("  Run scripts/run_validation.py --thread t1c_gpt2 first.")
     sys.exit(1)
 
-t1b_summary_path = PROJECT_ROOT / "experiments" / "t1b" / "results" / "summary.json"
+t1b_summary_path = PROJECT_ROOT / "experiments" / "t1b_gpt2" / "results" / "summary.json"
 if not t1b_summary_path.exists():
     print("ERROR: T1b summary not found.")
     print("  Expected: " + str(t1b_summary_path))
-    print("  Run experiments/t1b/run_experiment.py first.")
+    print("  Run experiments/t1b_gpt2/run_experiment.py first.")
     sys.exit(1)
 
 
@@ -78,8 +81,10 @@ from extraction.extractor import compute_sha256, extract_activations
 from experiments.config import ExperimentConfig
 from experiments.run import run_surface_null, check_phase_gate
 from stimuli.pipeline import verify_stimulus_file_frequency_matched
-from probes.probes import run_linear_probe
-from interventions.interventions import run_layer_sweep, assert_specificity_valid, mean_ablate
+from probes.probes import run_linear_probe, run_dispersion_analysis
+from interventions.interventions import (
+    run_layer_sweep_multi_target, assert_specificity_valid, norm_matched_control_kl,
+)
 from core.io import load_result, save_result
 import torch
 
@@ -110,27 +115,34 @@ print("[Step 1] Building and locking experiment config...")
 
 expected_outcomes: dict = {
     "lewis_vs_stalnaker_criterion": (
-        "Pairwise clear_case vs tie_case probe accuracy at peak layer. "
-        "> 0.70 → Lewis (model encodes indeterminacy — tie_case is geometrically distinct). "
-        "<= 0.70 → Stalnaker (model treats tie_case as determinate — same cluster as clear_case)."
+        "DISPERSION ratio (not separability). participation-ratio of tie_case "
+        "activations / clear_case at the peak layer, bootstrap 95% CI vs null ratio=1. "
+        "CI entirely above 1.0 (and above the layer-0 lexical baseline) → Lewis (tie "
+        "cloud diffuse — indeterminacy encoded). CI brackets 1.0 → Stalnaker (cannot "
+        "reject equal dispersion — tie collapses to a clear-like centroid). No hand-set "
+        "threshold. A probe separating clear from tie is NOT the test — it succeeds "
+        "under both theories."
     ),
     "outcome_if_lewis": (
-        "clear_case and tie_case are linearly separable. "
-        "Model represents the symmetric-worlds indeterminacy Lewis predicts — "
-        "tie_case activations occupy a distinct geometric region, reflecting "
-        "that no unique closest world is selected."
+        "tie_case activations are MORE dispersed than clear_case (participation-ratio "
+        "ratio > 1, CI excludes 1). The model represents the symmetric-worlds "
+        "indeterminacy Lewis predicts — no unique closest world is selected, so the "
+        "tie representation spreads over the equally-close set."
     ),
     "outcome_if_stalnaker": (
-        "clear_case and tie_case are NOT linearly separable. "
-        "Model treats both as determinate counterfactuals — "
-        "consistent with Stalnaker's Limit Assumption: every counterfactual "
-        "has a unique closest world, so tie cases resolve to one centroid."
+        "tie_case activations are NO more dispersed than clear_case (ratio ≈ 1). "
+        "Consistent with Stalnaker's Limit Assumption: a unique closest world is "
+        "always selected, so ties collapse to a single centroid like determinate cases."
     ),
     "near_miss_prediction": (
-        "near_miss cases test fine-grained similarity ordering. "
-        "Under Lewis, near_miss representations track proximity metric — "
-        "they should cluster between clear_case and tie_case. "
-        "Under Stalnaker, near_miss collapses to clear_case (determinate, unique world)."
+        "near_miss is a secondary similarity-ordering condition. Under Lewis its "
+        "dispersion sits between clear and tie; under Stalnaker it collapses toward "
+        "clear. Reported, not part of the primary criterion."
+    ),
+    "probe_role": (
+        "The clear-vs-tie linear probe is a SANITY CHECK only: it confirms the two "
+        "conditions are distinguishable at all. It does not discriminate Lewis from "
+        "Stalnaker — both predict distinguishable sentence-types."
     ),
 }
 
@@ -197,11 +209,13 @@ print("  Extraction complete.")
 print()
 
 
-# ── Step 5: 3-class probe at each layer ──────────────────────────────────────
-# All three conditions run together — peak layer localises where the
-# Lewis/Stalnaker geometry is most distinct.
+# ── Step 5: 3-class probe at each layer (SANITY CHECK + peak-layer locator) ───
+# The probe is NOT the Lewis/Stalnaker discriminator — separability holds under
+# both theories. It serves two secondary purposes: (a) confirm the conditions
+# are distinguishable at all, and (b) locate the peak layer where the distinction
+# is most represented, used as the reference layer for the dispersion test.
 
-print("[Step 5] Running 3-class probe at each layer (clear_case, tie_case, near_miss)...")
+print("[Step 5] Running 3-class probe at each layer (sanity check + peak-layer locator)...")
 print()
 
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -224,9 +238,13 @@ for activation_set in layer_activation_sets:
     save_result(probe_result, RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json"))
     probe_results_by_layer[layer_index] = probe_result
 
+# Exclude layer 0 (raw token + positional embeddings) from peak selection so the
+# reference layer reflects computed structure, not a lexical/positional surface
+# confound. Select on balanced accuracy (near_miss is a smaller class).
+candidate_layers = [layer_index for layer_index in probe_results_by_layer if layer_index != 0]
 peak_probe_layer   = max(
-    probe_results_by_layer,
-    key=lambda layer_index: probe_results_by_layer[layer_index]["accuracy_mean"],
+    candidate_layers,
+    key=lambda layer_index: probe_results_by_layer[layer_index]["balanced_accuracy_mean"],
 )
 peak_probe_accuracy = probe_results_by_layer[peak_probe_layer]["accuracy_mean"]
 chance_baseline     = probe_results_by_layer[peak_probe_layer]["chance_baseline"]
@@ -235,17 +253,56 @@ print("  3-class probe complete. Peak layer: " + str(peak_probe_layer))
 print()
 
 
-# ── Step 6: Pairwise probes at peak layer ─────────────────────────────────────
-# clear_case vs tie_case is the primary Lewis/Stalnaker discriminator.
+# ── Step 6: Dispersion analysis at peak layer (THE Lewis/Stalnaker test) ──────
+# Lewis vs Stalnaker is a DISPERSION question, not a separability one. We compare
+# the spread of the tie_case cloud to the clear_case cloud. Participation ratio
+# (effective dimensionality) is the discriminating measure; total variance and
+# median pairwise distance are reported alongside for robustness.
 
-print("[Step 6] Running pairwise probes at peak layer " + str(peak_probe_layer) + "...")
+print("[Step 6] Running dispersion analysis at peak layer " + str(peak_probe_layer) + " (Lewis/Stalnaker test)...")
 
 peak_activation_set  = next(s for s in layer_activation_sets if s["layer"] == peak_probe_layer)
 peak_all_activations = np.array(peak_activation_set["activations"])
 peak_all_labels      = peak_activation_set["labels"]
 peak_all_pair_ids    = peak_activation_set["pair_group_ids"]
 
+dispersion_result = run_dispersion_analysis(
+    peak_all_activations, peak_all_labels,
+    label_clear="clear_case", label_tie="tie_case",
+    seed=config.seed,
+)
+save_result(dispersion_result, RESULTS_DIR / "dispersion_analysis.json")
 
+participation_ratio_value = dispersion_result["dispersion_ratios"]["participation_ratio"]
+participation_ci          = dispersion_result["dispersion_ratio_ci_95"]["participation_ratio"]
+print("  Dispersion ratio tie/clear (participation ratio) : " +
+      str(round(participation_ratio_value, 3)) +
+      "  95% CI [" + str(round(participation_ci[0], 3)) + ", " + str(round(participation_ci[1], 3)) + "]")
+print("    total_variance ratio       : " + str(round(dispersion_result["dispersion_ratios"]["total_variance"], 3)))
+print("    median_pairwise_dist ratio : " + str(round(dispersion_result["dispersion_ratios"]["median_pairwise_dist"], 3)))
+print("    matched n per class        : " + str(dispersion_result["n_per_class"]))
+print()
+
+# Layer-0 lexical baseline: layer 0 is raw token + positional embeddings, so any
+# tie/clear dispersion gap THERE is purely lexical (the symmetric vs asymmetric
+# adjectives differ as words), not a worlds computation. A genuine Lewis effect
+# must EXCEED this baseline — the peak-layer CI lower bound has to clear the
+# layer-0 ratio, else the dispersion is just the adjective embeddings.
+layer_0_activation_set = next(s for s in layer_activation_sets if s["layer"] == 0)
+layer_0_dispersion = run_dispersion_analysis(
+    np.array(layer_0_activation_set["activations"]), layer_0_activation_set["labels"],
+    label_clear="clear_case", label_tie="tie_case", seed=config.seed,
+)
+layer_0_participation_ratio = layer_0_dispersion["dispersion_ratios"]["participation_ratio"]
+save_result(layer_0_dispersion, RESULTS_DIR / "dispersion_layer0_baseline.json")
+dispersion_exceeds_lexical_baseline = bool(participation_ci[0] > layer_0_participation_ratio)
+print("  Layer-0 lexical baseline ratio : " + str(round(layer_0_participation_ratio, 3)) +
+      "   (peak CI lower must exceed this: " + str(dispersion_exceeds_lexical_baseline) + ")")
+print()
+
+
+# Secondary sanity check: are clear and tie even distinguishable? (Both theories
+# predict YES — this is not the discriminator, just a floor check.)
 def pairwise_probe_accuracy(label_a: str, label_b: str) -> float:
     """Train binary probe on the two specified conditions, return mean CV accuracy."""
     condition_membership_mask = [
@@ -279,12 +336,14 @@ pairwise_results = {
     "clear_vs_near_miss": clear_vs_near_miss,
     "tie_vs_near_miss":   tie_vs_near_miss,
     "peak_layer":         peak_probe_layer,
+    "role":               "sanity_check_only — not the Lewis/Stalnaker discriminator",
 }
 save_result(pairwise_results, RESULTS_DIR / "pairwise_probe_results.json")
 
-print("  clear_case vs tie_case   : " + str(round(clear_vs_tie * 100, 1)) + "%  (THE Lewis/Stalnaker test)")
-print("  clear_case vs near_miss  : " + str(round(clear_vs_near_miss * 100, 1)) + "%")
-print("  tie_case vs near_miss    : " + str(round(tie_vs_near_miss * 100, 1)) + "%")
+print("  Sanity-check probe (distinguishable at all?):")
+print("    clear_case vs tie_case   : " + str(round(clear_vs_tie * 100, 1)) + "%")
+print("    clear_case vs near_miss  : " + str(round(clear_vs_near_miss * 100, 1)) + "%")
+print("    tie_case vs near_miss    : " + str(round(tie_vs_near_miss * 100, 1)) + "%")
 print()
 
 
@@ -305,61 +364,78 @@ mean_clear_case_by_layer: dict[int, np.ndarray] = {
     for layer_activation_bundle in layer_activation_sets
 }
 
-# Use last tie_case sentence as patching target
+# Targets: every tie_case sentence (always the sentence_b member of a
+# (clear_case, tie_case) pair). Multi-target sweep with a bootstrap CI over targets.
 tie_case_sentences: list[str] = []
 with VALIDATED_PATH.open("r") as validated_jsonl_file:
     for raw_line in validated_jsonl_file:
         stripped_line = raw_line.strip()
         if stripped_line:
             stimulus_pair = json.loads(stripped_line)
-            if stimulus_pair.get("label_a") == "tie_case":
-                tie_case_sentences.append(stimulus_pair["sentence_a"])
+            if stimulus_pair.get("label_b") == "tie_case":
+                tie_case_sentences.append(stimulus_pair["sentence_b"])
 
-target_run_config = {"stimulus": tie_case_sentences[-1]}
-
-sweep_result = run_layer_sweep(
+sweep_result = run_layer_sweep_multi_target(
     mean_clear_case_by_layer,
-    target_run_config,
+    tie_case_sentences,
     config.layer_range,
     config.component,
     config.token_positions[0],
     model,
+    seed=config.seed,
 )
 save_result(sweep_result, RESULTS_DIR / "layer_sweep.json")
 
 peak_patch_layer = sweep_result["peak_layer"]
-peak_patch_kl    = sweep_result["layer_effects"][peak_patch_layer]
+peak_patch_kl    = sweep_result["mean_kl_by_layer"][peak_patch_layer]
+peak_patch_kl_ci = sweep_result["kl_ci_95_by_layer"][peak_patch_layer]
 
-# Specificity check (V2)
-peak_act_set     = next(s for s in layer_activation_sets if s["layer"] == peak_patch_layer)
-peak_activations = np.array(peak_act_set["activations"])
-
-with torch.no_grad():
-    baseline_logits = model(target_run_config["stimulus"])[0, -1, :].tolist()
-
-mean_ablation_result = mean_ablate(
-    peak_activations, target_run_config, peak_patch_layer,
-    config.component, config.token_positions[0], model,
-    baseline_logits=baseline_logits,
+# Specificity (V2): clear-mean patch vs norm-matched random directions at peak layer.
+control_result = norm_matched_control_kl(
+    mean_clear_case_by_layer[peak_patch_layer], tie_case_sentences,
+    peak_patch_layer, config.component, config.token_positions[0], model,
+    seed=config.seed,
 )
-assert_specificity_valid(
-    peak_patch_kl, mean_ablation_result["kl_from_baseline"] or 0.0, peak_patch_layer,
-)
+assert_specificity_valid(peak_patch_kl, control_result["control_kl_p95"], peak_patch_layer)
 
-print("  Peak patching layer : " + str(peak_patch_layer) + "  (KL=" + str(round(peak_patch_kl, 4)) + ")")
+print("  Peak patching layer : " + str(peak_patch_layer)
+      + "  (mean KL=" + str(round(peak_patch_kl, 4))
+      + ", 95% CI [" + str(round(peak_patch_kl_ci[0], 4)) + ", " + str(round(peak_patch_kl_ci[1], 4)) + "]"
+      + ", n_targets=" + str(sweep_result["n_targets"]) + ")")
+print("  Norm-matched control KL : " + str(round(control_result["mean_control_kl"], 4)))
 print()
 
 
-# ── Step 8: Determine Lewis vs Stalnaker ──────────────────────────────────────
+# ── Step 8: Determine Lewis vs Stalnaker (from DISPERSION, not the probe) ──────
 
-# Pre-specified criterion (see expected_outcomes above)
-stalnaker_confirmed = clear_vs_tie <= 0.70
+# Threshold-free verdict from run_dispersion_analysis: CI entirely above 1 → Lewis;
+# CI brackets 1 → Stalnaker; CI entirely below 1 → inconclusive. Lewis ADDITIONALLY
+# requires the CI lower to exceed the layer-0 lexical baseline — otherwise a ratio
+# above 1 is just the symmetric/asymmetric adjective embeddings, not a worlds effect.
+lewis_confirmed     = dispersion_result["lewis_confirmed"] and dispersion_exceeds_lexical_baseline
+stalnaker_confirmed = dispersion_result["stalnaker_confirmed"]
 layers_agree        = peak_probe_layer == peak_patch_layer
 
-if stalnaker_confirmed:
-    mechanism_interpretation = expected_outcomes["outcome_if_stalnaker"]
-else:
+if lewis_confirmed:
+    mechanism_label          = "LEWIS (similarity-set, indeterminacy at ties)"
     mechanism_interpretation = expected_outcomes["outcome_if_lewis"]
+elif stalnaker_confirmed:
+    mechanism_label          = "STALNAKER (single-selection, Limit Assumption)"
+    mechanism_interpretation = expected_outcomes["outcome_if_stalnaker"]
+elif dispersion_result["lewis_confirmed"] and not dispersion_exceeds_lexical_baseline:
+    mechanism_label          = "INCONCLUSIVE (dispersion ratio > 1 but not above the layer-0 lexical baseline)"
+    mechanism_interpretation = (
+        "The tie cloud is more dispersed than clear, but not by more than the layer-0 "
+        "lexical baseline — the gap is attributable to the adjective embeddings, not a "
+        "worlds computation. Not a valid Lewis signal."
+    )
+else:
+    mechanism_label          = "INCONCLUSIVE (dispersion ratio CI lies below 1)"
+    mechanism_interpretation = (
+        "The tie cloud is LESS dispersed than clear (CI below 1) — neither the Lewis "
+        "diffusion nor the Stalnaker equal-dispersion prediction. The geometry does not "
+        "pre-specify a verdict."
+    )
 
 summary: dict = {
     "experiment_id":               config.experiment_id,
@@ -371,12 +447,23 @@ summary: dict = {
     "peak_probe_accuracy_3class":  float(peak_probe_accuracy),
     "chance_baseline":             float(chance_baseline),
     "surface_null_accuracy":       float(surface_null_accuracy),
-    "pairwise_clear_vs_tie":       float(clear_vs_tie),
-    "pairwise_clear_vs_near_miss": float(clear_vs_near_miss),
-    "pairwise_tie_vs_near_miss":   float(tie_vs_near_miss),
+    "dispersion_participation_ratio":     float(participation_ratio_value),
+    "dispersion_participation_ratio_ci":  [float(participation_ci[0]), float(participation_ci[1])],
+    "dispersion_total_variance_ratio":    float(dispersion_result["dispersion_ratios"]["total_variance"]),
+    "dispersion_median_dist_ratio":       float(dispersion_result["dispersion_ratios"]["median_pairwise_dist"]),
+    "dispersion_n_per_class":             int(dispersion_result["n_per_class"]),
+    "dispersion_layer0_baseline_ratio":   float(layer_0_participation_ratio),
+    "dispersion_exceeds_lexical_baseline": dispersion_exceeds_lexical_baseline,
+    "sanity_clear_vs_tie_probe":   float(clear_vs_tie),
+    "sanity_clear_vs_near_miss":   float(clear_vs_near_miss),
+    "sanity_tie_vs_near_miss":     float(tie_vs_near_miss),
     "peak_patch_layer":            peak_patch_layer,
-    "peak_patch_kl":               float(peak_patch_kl),
+    "peak_patch_kl_mean":          float(peak_patch_kl),
+    "peak_patch_kl_ci_95":         [float(peak_patch_kl_ci[0]), float(peak_patch_kl_ci[1])],
+    "peak_patch_n_targets":        int(sweep_result["n_targets"]),
+    "norm_matched_control_kl":     float(control_result["mean_control_kl"]),
     "layers_agree":                layers_agree,
+    "lewis_confirmed":             lewis_confirmed,
     "stalnaker_confirmed":         stalnaker_confirmed,
     "mechanism_interpretation":    mechanism_interpretation,
     "expected_outcomes":           config.expected_outcomes,
@@ -408,8 +495,16 @@ for layer_index in range(GPT2_MEDIUM_N_LAYERS):
     )
 
 print()
-print("Pairwise probe at peak layer " + str(peak_probe_layer) + ":")
-print("  clear_case vs tie_case   : " + str(round(clear_vs_tie * 100, 1)) + "%  (criterion > 70% for Lewis)")
+print("DISPERSION test at peak layer " + str(peak_probe_layer) + " (tie/clear ratio):")
+print("  participation ratio  : " + str(round(participation_ratio_value, 3)) +
+      "  95% CI [" + str(round(participation_ci[0], 3)) + ", " + str(round(participation_ci[1], 3)) + "]" +
+      "   (CI entirely > 1 & > layer-0 baseline = Lewis; CI brackets 1 = Stalnaker)")
+print("  total variance       : " + str(round(dispersion_result["dispersion_ratios"]["total_variance"], 3)))
+print("  median pairwise dist : " + str(round(dispersion_result["dispersion_ratios"]["median_pairwise_dist"], 3)))
+print("  matched n per class  : " + str(dispersion_result["n_per_class"]))
+print()
+print("Sanity-check probe (NOT the discriminator):")
+print("  clear_case vs tie_case   : " + str(round(clear_vs_tie * 100, 1)) + "%  (expect distinguishable under both theories)")
 print("  clear_case vs near_miss  : " + str(round(clear_vs_near_miss * 100, 1)) + "%")
 print("  tie_case vs near_miss    : " + str(round(tie_vs_near_miss * 100, 1)) + "%")
 print()
@@ -422,8 +517,7 @@ print("T1b context : " + ("Pearl — T1c probes partial worlds-structure" if pea
                           else "Lewis/Stalnaker — T1c discriminates the selection function"))
 print()
 print("=" * 60)
-print("MECHANISM: " + ("STALNAKER (single-selection, Limit Assumption)"
-                       if stalnaker_confirmed else "LEWIS (similarity-set, indeterminacy at ties)"))
+print("MECHANISM: " + mechanism_label)
 print("=" * 60)
 print()
 print("Interpretation:")

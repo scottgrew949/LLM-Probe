@@ -35,17 +35,17 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-THREAD_ID = "t1d"
+THREAD_ID = "t1d_gpt2"
 MODEL_ID = "gpt2-medium"
 GPT2_MEDIUM_N_LAYERS = 24
 
-VALIDATED_PATH = PROJECT_ROOT / "stimuli" / "validated" / THREAD_ID / "pairs.validated.jsonl"
+VALIDATED_PATH = PROJECT_ROOT / "stimuli" / "validated" / "t1d" / "pairs.validated.jsonl"
 RESULTS_DIR = PROJECT_ROOT / "experiments" / THREAD_ID / "results"
 CONFIG_PATH = PROJECT_ROOT / "experiments" / THREAD_ID / "config.json"
 SURFACE_NULL_PATH = RESULTS_DIR / "surface_null.json"
 SUMMARY_PATH = RESULTS_DIR / "summary.json"
 
-T1B_PREREQUISITE_ID = "t1b"
+T1B_PREREQUISITE_ID = "t1b_gpt2"
 
 
 # ── Guards ────────────────────────────────────────────────────────────────────
@@ -53,14 +53,14 @@ T1B_PREREQUISITE_ID = "t1b"
 if not VALIDATED_PATH.exists():
     print("ERROR: Validated stimulus file not found.")
     print("  Expected: " + str(VALIDATED_PATH))
-    print("  Run scripts/run_validation.py --thread t1d first.")
+    print("  Run scripts/run_validation.py --thread t1d_gpt2 first.")
     sys.exit(1)
 
-t1b_summary_path = PROJECT_ROOT / "experiments" / "t1b" / "results" / "summary.json"
+t1b_summary_path = PROJECT_ROOT / "experiments" / "t1b_gpt2" / "results" / "summary.json"
 if not t1b_summary_path.exists():
     print("ERROR: T1b summary not found.")
     print("  Expected: " + str(t1b_summary_path))
-    print("  Run experiments/t1b/run_experiment.py first.")
+    print("  Run experiments/t1b_gpt2/run_experiment.py first.")
     sys.exit(1)
 
 
@@ -70,8 +70,10 @@ from extraction.extractor import compute_sha256, extract_activations
 from experiments.config import ExperimentConfig
 from experiments.run import run_surface_null, check_phase_gate
 from stimuli.pipeline import verify_stimulus_file_frequency_matched
-from probes.probes import run_linear_probe, run_identification_probe, IDENTIFIED_T1D_LABELS
-from interventions.interventions import run_layer_sweep, assert_specificity_valid, mean_ablate
+from probes.probes import run_linear_probe, run_identification_probe, probe_beats_null
+from interventions.interventions import (
+    run_layer_sweep_multi_target, assert_specificity_valid, norm_matched_control_kl,
+)
 from core.io import load_result, save_result
 import torch
 
@@ -131,8 +133,11 @@ confounder_structure_description: dict = {
 
 expected_outcomes_description: dict = {
     "identification_criterion": (
-        "Binary probe accuracy (adjustable vs not_adjustable) at peak layer. "
-        "> 0.70 -> model encodes adjustability. <= 0.70 -> no identifiability representation."
+        "PRIMARY: balanced accuracy of the back_door_adjustable vs "
+        "confounded_not_adjustable minimal-pair probe (chance 0.5) at the peak layer, "
+        "calibrated against a shuffled-label null. Encodes adjustability iff balanced "
+        "accuracy beats the null's 95th percentile (no fixed cutoff). The 3-vs-1 "
+        "identified-vs-not grouping is secondary, read via balanced accuracy only."
     ),
     "outcome_if_pearl_and_encodes_identification": (
         "back_door_adjustable and front_door_adjustable cluster together, "
@@ -220,48 +225,88 @@ for activation_set in layer_activation_sets:
     save_result(probe_result, RESULTS_DIR / ("probe_layer_" + str(layer_index) + ".json"))
     probe_results_by_layer[layer_index] = probe_result
 
+# Exclude layer 0 (raw token + positional embeddings) from peak selection; pick
+# on balanced accuracy since the four conditions are not all equinumerous.
+candidate_layers = [layer_index for layer_index in probe_results_by_layer if layer_index != 0]
 peak_probe_layer = max(
-    probe_results_by_layer,
-    key=lambda layer_index: probe_results_by_layer[layer_index]["accuracy_mean"]
+    candidate_layers,
+    key=lambda layer_index: probe_results_by_layer[layer_index]["balanced_accuracy_mean"]
 )
 peak_probe_accuracy = probe_results_by_layer[peak_probe_layer]["accuracy_mean"]
+peak_probe_balanced_accuracy = probe_results_by_layer[peak_probe_layer]["balanced_accuracy_mean"]
 print("  Four-class probe complete. Peak layer: " + str(peak_probe_layer))
 print()
 
-# ── Step 6: Binary identification probe at peak layer ────────────────────────
+# ── Step 6: Identification probes at peak layer ──────────────────────────────
+# PRIMARY: the minimal-pair binary back_door_adjustable vs confounded_not_adjustable
+# (graph-isomorphic, observed vs hidden confounder, 60 vs 60 → chance 0.5). This
+# isolates adjustability. Read BALANCED accuracy against 0.70.
+# SECONDARY: the 3-vs-1 identified-vs-not grouping (imbalanced) — reported via
+# balanced accuracy only, since raw accuracy of a constant classifier = 0.75 floor.
 
-print("[Step 6] Running binary identification probe at peak layer " + str(peak_probe_layer) + "...")
+print("[Step 6] Running identification probes at peak layer " + str(peak_probe_layer) + "...")
 peak_activation_set = next(s for s in layer_activation_sets if s["layer"] == peak_probe_layer)
 peak_activations = np.array(peak_activation_set["activations"])
 peak_labels = peak_activation_set["labels"]
+peak_pair_ids = peak_activation_set["pair_group_ids"]
 
+# Primary: minimal-pair binary. Filter to the two conditions, keep pair groups in lockstep.
+primary_mask = [label in ("back_door_adjustable", "confounded_not_adjustable") for label in peak_labels]
+primary_activations = peak_activations[primary_mask]
+primary_labels = [label for label, keep in zip(peak_labels, primary_mask) if keep]
+primary_pair_ids = [group_id for group_id, keep in zip(peak_pair_ids, primary_mask) if keep]
+primary_probe_result = run_linear_probe(
+    primary_activations, primary_labels, config, pair_ids=primary_pair_ids,
+    selectivity_seed=config.seed,
+)
+primary_probe_result["layer"] = peak_probe_layer
+# Calibrated gate: balanced accuracy must beat the 95th percentile of a shuffled-
+# label null for THIS geometry — no magic 0.70 cutoff.
+primary_null = probe_beats_null(
+    primary_activations, primary_labels, config, pair_ids=primary_pair_ids, seed=config.seed,
+)
+primary_probe_result["null_balanced_p95"] = primary_null["null_balanced_p95"]
+primary_probe_result["beats_null"] = primary_null["beats_null"]
+save_result(primary_probe_result, RESULTS_DIR / "identification_probe_minimal.json")
+
+identification_balanced_accuracy = primary_probe_result["balanced_accuracy_mean"]
+identification_criterion_met = primary_null["beats_null"]
+print("  PRIMARY back_door vs confounded (balanced acc) : "
+      + str(round(identification_balanced_accuracy * 100, 1)) + "%   chance 50%")
+print("    null 95th pct (shuffled labels)              : "
+      + str(round(primary_null["null_balanced_p95"] * 100, 1)) + "%")
+if "selectivity" in primary_probe_result:
+    print("    selectivity (real - control-task)            : "
+          + str(round(primary_probe_result["selectivity"] * 100, 1)) + "%")
+print("  Criterion met (beats calibrated null)          : " + str(identification_criterion_met))
+
+# Secondary: 3-vs-1 grouping, balanced accuracy only.
 identification_probe_result = run_identification_probe(
-    peak_activations, peak_labels, config, pair_ids=peak_activation_set["pair_group_ids"]
+    peak_activations, peak_labels, config, pair_ids=peak_pair_ids
 )
 identification_probe_result["layer"] = peak_probe_layer
 save_result(identification_probe_result, RESULTS_DIR / "identification_probe.json")
-
 identification_accuracy = identification_probe_result["accuracy_mean"]
-identification_criterion_met = identification_accuracy > 0.70
-print("  Identification probe accuracy : " + str(round(identification_accuracy * 100, 1)) + "%")
-print("  Criterion met (> 70%)         : " + str(identification_criterion_met))
+identification_grouped_balanced = identification_probe_result["balanced_accuracy_mean"]
+print("  SECONDARY identified-vs-not (balanced acc)     : "
+      + str(round(identification_grouped_balanced * 100, 1)) + "%   (3-vs-1, raw acc floor 75%)")
 print()
 
 # ── Step 7: Layer sweep (L3) ──────────────────────────────────────────────────
 
 print("[Step 7] Running layer sweep (identified -> not-identifiable direction)...")
 
-# Patch the SAME contrast the L2 identification probe tests: source = mean of
-# all identified conditions (incl. unconfounded_control), target = the single
-# not-identifiable condition. Uses the shared IDENTIFIED_T1D_LABELS so L2 and L3
-# cannot diverge.
-identified_indices = [
+# Patch the SAME contrast the PRIMARY L2 probe tests: source = mean
+# back_door_adjustable activation (identified pole), target = every
+# confounded_not_adjustable sentence (not-identified pole). Multi-target with a
+# bootstrap CI over targets, not a single sentence.
+back_door_indices = [
     i for i, condition_label in enumerate(layer_activation_sets[0]["labels"])
-    if condition_label in IDENTIFIED_T1D_LABELS
+    if condition_label == "back_door_adjustable"
 ]
 
-mean_identified_activation_by_layer: dict[int, np.ndarray] = {
-    activation_set["layer"]: np.array(activation_set["activations"])[identified_indices].mean(axis=0)
+mean_back_door_by_layer: dict[int, np.ndarray] = {
+    activation_set["layer"]: np.array(activation_set["activations"])[back_door_indices].mean(axis=0)
     for activation_set in layer_activation_sets
 }
 
@@ -274,35 +319,37 @@ with VALIDATED_PATH.open("r") as validated_file:
             if pair.get("label_b") == "confounded_not_adjustable":
                 not_adjustable_sentences.append(pair["sentence_b"])
 
-target_run_config = {"stimulus": not_adjustable_sentences[-1]}
-
-sweep_result = run_layer_sweep(
-    mean_identified_activation_by_layer,
-    target_run_config,
+sweep_result = run_layer_sweep_multi_target(
+    mean_back_door_by_layer,
+    not_adjustable_sentences,
     config.layer_range,
     config.component,
     config.token_positions[0],
     model,
+    seed=config.seed,
 )
 save_result(sweep_result, RESULTS_DIR / "layer_sweep.json")
 
 peak_patch_layer = sweep_result["peak_layer"]
-peak_patch_kl = sweep_result["layer_effects"][peak_patch_layer]
+peak_patch_kl = sweep_result["mean_kl_by_layer"][peak_patch_layer]
+peak_patch_kl_ci = sweep_result["kl_ci_95_by_layer"][peak_patch_layer]
 layers_agree = peak_probe_layer == peak_patch_layer
 
-with torch.no_grad():
-    baseline_logits = model(target_run_config["stimulus"])[0, -1, :].tolist()
-
-mean_ablation_result = mean_ablate(
-    peak_activations, target_run_config, peak_patch_layer,
-    config.component, config.token_positions[0], model,
-    baseline_logits=baseline_logits,
+# Specificity: compare the back_door-mean patch against norm-matched RANDOM
+# directions at the peak layer (averaged over targets). A specific effect must
+# beat an equal-norm random perturbation, isolating direction from magnitude.
+control_result = norm_matched_control_kl(
+    mean_back_door_by_layer[peak_patch_layer], not_adjustable_sentences,
+    peak_patch_layer, config.component, config.token_positions[0], model,
+    seed=config.seed,
 )
-assert_specificity_valid(
-    peak_patch_kl, mean_ablation_result["kl_from_baseline"] or 0.0, peak_patch_layer
-)
+assert_specificity_valid(peak_patch_kl, control_result["control_kl_p95"], peak_patch_layer)
 
-print("  Peak patching layer : " + str(peak_patch_layer) + "  (KL=" + str(round(peak_patch_kl, 4)) + ")")
+print("  Peak patching layer : " + str(peak_patch_layer)
+      + "  (mean KL=" + str(round(peak_patch_kl, 4))
+      + ", 95% CI [" + str(round(peak_patch_kl_ci[0], 4)) + ", " + str(round(peak_patch_kl_ci[1], 4)) + "]"
+      + ", n_targets=" + str(sweep_result["n_targets"]) + ")")
+print("  Norm-matched control KL : " + str(round(control_result["mean_control_kl"], 4)))
 print("  L2 / L3 agreement   : " + ("YES" if layers_agree else "NO"))
 print()
 
@@ -316,11 +363,20 @@ summary: dict = {
     "t1b_pearl_confirmed": pearl_confirmed_in_t1b,
     "peak_probe_layer": peak_probe_layer,
     "peak_probe_accuracy_4class": float(peak_probe_accuracy),
+    "peak_probe_balanced_accuracy_4class": float(peak_probe_balanced_accuracy),
+    "identification_primary_balanced_accuracy": float(identification_balanced_accuracy),
+    "identification_primary_null_p95": float(primary_null["null_balanced_p95"]),
+    "identification_primary_beats_null": bool(primary_null["beats_null"]),
+    "identification_primary_selectivity": float(primary_probe_result.get("selectivity", float("nan"))),
+    "identification_secondary_balanced_accuracy": float(identification_grouped_balanced),
     "identification_probe_accuracy": float(identification_accuracy),
     "identification_criterion_met": identification_criterion_met,
     "surface_null_accuracy": float(surface_null_accuracy),
     "peak_patch_layer": peak_patch_layer,
-    "peak_patch_kl": float(peak_patch_kl),
+    "peak_patch_kl_mean": float(peak_patch_kl),
+    "peak_patch_kl_ci_95": [float(peak_patch_kl_ci[0]), float(peak_patch_kl_ci[1])],
+    "peak_patch_n_targets": int(sweep_result["n_targets"]),
+    "norm_matched_control_kl": float(control_result["mean_control_kl"]),
     "layers_agree": layers_agree,
     "expected_outcomes": config.expected_outcomes,
 }

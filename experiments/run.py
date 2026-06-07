@@ -220,7 +220,12 @@ def check_phase_gate(config: ExperimentConfig) -> None:
     Raises:
         ValueError: for any failed gate, with specific V-number and fix instructions.
     """
+    # results_directory uses the full (possibly suffixed) thread_id so a
+    # replication variant's outputs stay isolated. The thread-specific gates below
+    # key on config.base_thread instead, so a "_pythia" variant cannot bypass
+    # V5/V10/V14/V15 — see ExperimentConfig.base_thread.
     results_directory = PROJECT_ROOT / "experiments" / config.thread_id / "results"
+    base_thread_id = config.base_thread
 
     # V1: config must be locked (pre-registration complete)
     if not config.pre_spec_locked:
@@ -255,7 +260,7 @@ def check_phase_gate(config: ExperimentConfig) -> None:
         )
 
     # V10: T1b and T1c require T1a to have confirmed Level 3 encoding
-    if config.thread_id in ("t1b", "t1c"):
+    if base_thread_id in ("t1b", "t1c"):
         if config.prerequisite_experiment_id is None:
             raise ValueError(
                 "V10: T1b/T1c require prerequisite_experiment_id set in config. "
@@ -280,7 +285,7 @@ def check_phase_gate(config: ExperimentConfig) -> None:
 
     # For t1d: only require T1b summary exists (not outcome-gated)
     # T1d interpretation depends on pearl_confirmed but does not gate on it
-    if config.thread_id == "t1d" and config.prerequisite_experiment_id:
+    if base_thread_id == "t1d" and config.prerequisite_experiment_id:
         t1b_summary_path = (
             PROJECT_ROOT / "experiments" / config.prerequisite_experiment_id / "results" / "summary.json"
         )
@@ -291,21 +296,21 @@ def check_phase_gate(config: ExperimentConfig) -> None:
             )
 
     # V14: T1d requires identification_criterion
-    if config.thread_id == "t1d" and not config.identification_criterion:
+    if base_thread_id == "t1d" and not config.identification_criterion:
         raise ValueError(
             "V14: identification_criterion is None for T1d. "
             "Set to 'back_door' or 'front_door' before running."
         )
 
     # V15: T1d requires confounder_structure
-    if config.thread_id == "t1d" and not config.confounder_structure:
+    if base_thread_id == "t1d" and not config.confounder_structure:
         raise ValueError(
             "V15: confounder_structure is None for T1d. "
             "Define the formal causal graph before running."
         )
 
     # V16: T2c requires T2b gate passing
-    if config.thread_id == "t2c" and config.prerequisite_experiment_id:
+    if base_thread_id == "t2c" and config.prerequisite_experiment_id:
         t2b_summary_path = (
             PROJECT_ROOT / "experiments" / config.prerequisite_experiment_id / "results" / "summary.json"
         )
@@ -316,7 +321,7 @@ def check_phase_gate(config: ExperimentConfig) -> None:
             )
 
     # V17: T2c requires intension_type
-    if config.thread_id == "t2c" and not config.intension_type:
+    if base_thread_id == "t2c" and not config.intension_type:
         raise ValueError(
             "V17: intension_type is None for T2c. "
             "Set to 'primary', 'secondary', or 'dissociation' before running."
@@ -334,11 +339,11 @@ def check_phase_gate(config: ExperimentConfig) -> None:
             )
 
     # V4: T5 requires asymmetry thresholds pre-specified from null distributions
-    if config.thread_id == "t5" and config.t5_asymmetry_thresholds is None:
+    if base_thread_id == "t5" and config.t5_asymmetry_thresholds is None:
         raise ValueError("V4: T5 requires t5_asymmetry_thresholds set in config.")
 
     # V13: T4 requires ontology provenance documented before RSA
-    if config.thread_id == "t4":
+    if base_thread_id == "t4":
         if config.ontology_version is None or config.matrix_source is None:
             raise ValueError(
                 "V13: T4 requires ontology_version and matrix_source set in config."
@@ -374,7 +379,9 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
     from transformer_lens import HookedTransformer
     from extraction.extractor import extract_activations
     from probes.probes import run_linear_probe
-    from interventions.interventions import run_layer_sweep, assert_specificity_valid, mean_ablate
+    from interventions.interventions import (
+        run_layer_sweep_multi_target, assert_specificity_valid, norm_matched_control_kl,
+    )
 
     # V1: double-check before any work begins
     if not config.pre_spec_locked:
@@ -432,44 +439,31 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
             class_a_activations = all_activations[::2]  # every other row starting at 0
             mean_source_activations_by_layer[activation_set["layer"]] = class_a_activations.mean(axis=0)
 
-        # Use last pair's sentence_b as the target — avoids overlap with source computation
-        target_run_config = {"stimulus": stimulus_pairs[-1]["sentence_b"]}
+        # Targets: every class-B sentence. Multi-target sweep → mean KL + bootstrap
+        # CI over targets, not a single-sentence n=1 effect.
+        target_sentences = [pair["sentence_b"] for pair in stimulus_pairs]
 
-        sweep_result = run_layer_sweep(
+        sweep_result = run_layer_sweep_multi_target(
             mean_source_activations_by_layer,
-            target_run_config,
+            target_sentences,
             config.layer_range,
             config.component,
             config.token_positions[0],
             model,
+            seed=config.seed,
         )
         save_result(sweep_result, results_directory / "layer_sweep.json")
 
-        # V2: specificity check at the peak layer
-        # Mean-ablate the target at the peak layer and compare KL effects
+        # V2: specificity at the peak layer vs norm-matched random directions
+        # (calibrated control, not the grand-mean ablation).
         peak_layer = sweep_result["peak_layer"]
-        peak_activation_set = next(s for s in layer_activation_sets if s["layer"] == peak_layer)
-        peak_activations = np.array(peak_activation_set["activations"])
-
-        # Get baseline logits for the target stimulus (unpatched)
-        import torch
-        with torch.no_grad():
-            baseline_logits = model(target_run_config["stimulus"])[0, -1, :].tolist()
-
-        mean_ablation_result = mean_ablate(
-            peak_activations,
-            target_run_config,
-            peak_layer,
-            config.component,
-            config.token_positions[0],
-            model,
-            baseline_logits=baseline_logits,
+        control_result = norm_matched_control_kl(
+            mean_source_activations_by_layer[peak_layer], target_sentences,
+            peak_layer, config.component, config.token_positions[0], model,
+            seed=config.seed,
         )
-
-        specific_patch_kl = sweep_result["layer_effects"][peak_layer]
-        mean_ablation_kl = mean_ablation_result["kl_from_baseline"] or 0.0
-
-        assert_specificity_valid(specific_patch_kl, mean_ablation_kl, peak_layer)
+        specific_patch_kl = sweep_result["mean_kl_by_layer"][peak_layer]
+        assert_specificity_valid(specific_patch_kl, control_result["control_kl_p95"], peak_layer)
 
     # Step 4: Find peak layers and compare L2 vs L3
     probe_accuracy_by_layer = {
