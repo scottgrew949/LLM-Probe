@@ -41,7 +41,8 @@ MODEL_VARIANT_SUFFIX = THREAD_ID[len(BASE_THREAD):]  # "" | "_gpt2" | "_pythia"
 # Which model each run suffix loads. Stimuli are model-agnostic and live under the
 # BASE thread; every per-model run reuses them and only re-runs its own gate.
 MODEL_BY_SUFFIX: dict[str, str] = {
-    "": "gpt2-medium",            # bare base id (e.g. legacy threads) defaults to GPT-2
+    "": "meta-llama/Llama-3.2-3B",   # bare base id defaults to primary (Llama) — 2026-06-13
+    "_llama": "meta-llama/Llama-3.2-3B",
     "_gpt2": "gpt2-medium",
     "_pythia": "EleutherAI/pythia-1.4b",
 }

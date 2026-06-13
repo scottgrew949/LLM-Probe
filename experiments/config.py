@@ -59,8 +59,9 @@ BASE_THREAD_IDS: frozenset[str] = frozenset({
 its thread_id reduces to."""
 
 MODEL_SPECS: dict[str, str] = {
-    "_gpt2": "gpt2-medium",
-    "_pythia": "EleutherAI/pythia-1.4b",
+    "_llama": "meta-llama/Llama-3.2-3B",    # PRIMARY (base, not Instruct) — 2026-06-13 re-scope
+    "_gpt2": "gpt2-medium",                 # dropped from primacy; runners archived
+    "_pythia": "EleutherAI/pythia-1.4b",    # developmental / checkpoint story only
 }
 """Per-model run suffix → HuggingFace model id. The SINGLE source for both 'which
 suffixes are valid runs' and 'which model each suffix loads'. A suffix appended to
@@ -81,13 +82,14 @@ def model_id_for_thread(thread_id: str) -> str:
     The HuggingFace model id a thread_id runs on, from its variant suffix.
 
     't1b_pythia' → 'EleutherAI/pythia-1.4b'. A bare base id (no suffix) defaults to
-    'gpt2-medium' (local-dev model). Single lookup point shared by the runner
-    template and the validation pipeline.
+    the primary model 'meta-llama/Llama-3.2-3B' (2026-06-13 re-scope; bare ids are
+    logical keys — they should not be run directly). Single lookup point shared by
+    the runner template and the validation pipeline.
     """
     for variant_suffix, model_id in MODEL_SPECS.items():
         if thread_id.endswith(variant_suffix):
             return model_id
-    return "gpt2-medium"
+    return "meta-llama/Llama-3.2-3B"
 
 
 def base_thread_of(thread_id: str) -> str:
