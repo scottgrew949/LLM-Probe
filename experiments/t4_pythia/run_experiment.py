@@ -27,10 +27,15 @@ if device == "cpu":
     print("WARNING: no GPU. Switch the Colab runtime to T4 GPU, or this is very slow.", flush=True)
 
 print("Loading", config.model_id, "...", flush=True)
-# float16 on GPU halves memory and avoids the fp32 double-load OOM that kills the
-# process during weight conversion. CPU stays float32 (float16 is poorly supported there).
+# float16 on GPU halves memory and avoids the fp32 double-load OOM. CPU stays
+# float32 (float16 is poorly supported there). We use from_pretrained_no_processing
+# because the default from_pretrained runs LayerNorm folding and centering, which is
+# numerically unstable in float16 and memory heavy. We only read resid_post for RSA,
+# so the unprocessed weights are fine and the hook names are identical.
 load_dtype = torch.float16 if device == "cuda" else torch.float32
-model = HookedTransformer.from_pretrained(config.model_id, device=device, dtype=load_dtype)
+model = HookedTransformer.from_pretrained_no_processing(
+    config.model_id, device=device, dtype=load_dtype
+)
 print("Loaded. n_layers =", model.cfg.n_layers, flush=True)
 
 pilot = os.environ.get("PILOT", "1") == "1"
